@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronRight, ChevronDown, Plus, Trash2, LayoutTemplate } from 'lucide-react';
+import { ChevronRight, ChevronDown, Plus, Trash2, LayoutTemplate, X } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
 import { useUIStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -9,6 +9,7 @@ import { Notebook, Section, SectionGroup } from '../../domain/types';
 
 export const LeftSidebar: React.FC = () => {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const currentWorkspace = useAuthStore((s) => s.currentWorkspace);
 
   const notebooks = useWorkspaceStore((s) => s.notebooks);
@@ -47,7 +48,6 @@ export const LeftSidebar: React.FC = () => {
       setGroupsByNotebook((prev) => ({ ...prev, [nbId]: grps }));
       setSectionsByNotebook((prev) => ({ ...prev, [nbId]: secs }));
 
-      // Default expand all section groups
       const initialGroupExpand: Record<string, boolean> = {};
       grps.forEach(g => { initialGroupExpand[g.id] = true; });
       setExpandedGroups((prev) => ({ ...initialGroupExpand, ...prev }));
@@ -72,6 +72,10 @@ export const LeftSidebar: React.FC = () => {
       setActivePageId(null);
       usePageStore.getState().setCurrentPage(null);
     }
+    // Auto collapse sidebar on mobile selection
+    if (window.innerWidth < 768) {
+      toggleSidebar();
+    }
   };
 
   const handleCreateNotebook = async () => {
@@ -85,156 +89,171 @@ export const LeftSidebar: React.FC = () => {
   };
 
   return (
-    <aside className="w-64 bg-slate-950 text-slate-200 border-r border-slate-800 flex flex-col h-[calc(100vh-3.5rem)] shrink-0 select-none z-10">
-      
-      {/* Header */}
-      <div className="p-3 border-b border-slate-800/80 flex items-center justify-between">
-        <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Notebooks</span>
-        <button
-          onClick={handleCreateNotebook}
-          className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-colors"
-          title="Create Notebook"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
-      </div>
+    <>
+      {/* Mobile Backdrop */}
+      <div
+        onClick={toggleSidebar}
+        className="md:hidden fixed inset-0 z-30 bg-slate-950/60 backdrop-blur-xs animate-in fade-in"
+      />
 
-      {/* Notebook & Section Group Tree */}
-      <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
-        {notebooks.map((nb) => {
-          const isExpanded = !!expandedNotebooks[nb.id];
-          const isNbActive = activeNotebookId === nb.id;
+      <aside className="fixed md:static inset-y-0 left-0 top-14 w-72 sm:w-64 bg-slate-950 text-slate-200 border-r border-slate-800 flex flex-col h-[calc(100vh-3.5rem)] shrink-0 select-none z-40 shadow-2xl md:shadow-none animate-in slide-in-from-left">
+        
+        {/* Header */}
+        <div className="p-3 border-b border-slate-800/80 flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Notebooks</span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleCreateNotebook}
+              className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-colors"
+              title="Create Notebook"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <button
+              onClick={toggleSidebar}
+              className="md:hidden p-1 text-slate-400 hover:text-white rounded-lg"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
 
-          const grps = groupsByNotebook[nb.id] || [];
-          const secs = sectionsByNotebook[nb.id] || [];
+        {/* Notebook & Section Group Tree */}
+        <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
+          {notebooks.map((nb) => {
+            const isExpanded = !!expandedNotebooks[nb.id];
+            const isNbActive = activeNotebookId === nb.id;
 
-          // Group sections by sectionGroupId
-          const groupedSecsMap = new Map<string, Section[]>();
-          const standaloneSecs: Section[] = [];
+            const grps = groupsByNotebook[nb.id] || [];
+            const secs = sectionsByNotebook[nb.id] || [];
 
-          secs.forEach((s) => {
-            if (s.sectionGroupId) {
-              const list = groupedSecsMap.get(s.sectionGroupId) || [];
-              list.push(s);
-              groupedSecsMap.set(s.sectionGroupId, list);
-            } else {
-              standaloneSecs.push(s);
-            }
-          });
+            const groupedSecsMap = new Map<string, Section[]>();
+            const standaloneSecs: Section[] = [];
 
-          return (
-            <div key={nb.id} className="flex flex-col">
-              {/* Notebook Header Row */}
-              <button
-                onClick={() => {
-                  setActiveNotebookId(nb.id);
-                  toggleNotebookExpand(nb.id);
-                }}
-                className={`flex items-center gap-2 p-2 rounded-xl text-left text-xs font-semibold transition-all ${
-                  isNbActive
-                    ? 'bg-slate-800 text-white shadow-sm'
-                    : 'text-slate-300 hover:bg-slate-900 hover:text-white'
-                }`}
-              >
-                <span className="p-0.5 text-slate-400">
-                  {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                </span>
-                <span className="text-sm">{nb.icon}</span>
-                <span className="flex-1 truncate">{nb.name}</span>
-              </button>
+            secs.forEach((s) => {
+              if (s.sectionGroupId) {
+                const list = groupedSecsMap.get(s.sectionGroupId) || [];
+                list.push(s);
+                groupedSecsMap.set(s.sectionGroupId, list);
+              } else {
+                standaloneSecs.push(s);
+              }
+            });
 
-              {/* Expandable Section Groups & Sections */}
-              {isExpanded && (
-                <div className="ml-4 pl-2 border-l border-slate-800/80 flex flex-col gap-1 mt-1 my-1">
-                  
-                  {/* Render Section Groups (e.g. GS I, GS II, GS III, GS IV) */}
-                  {grps.map((grp) => {
-                    const isGrpExpanded = expandedGroups[grp.id] !== false; // Default expanded
-                    const childSecs = groupedSecsMap.get(grp.id) || [];
+            return (
+              <div key={nb.id} className="flex flex-col">
+                {/* Notebook Header Row */}
+                <button
+                  onClick={() => {
+                    setActiveNotebookId(nb.id);
+                    toggleNotebookExpand(nb.id);
+                  }}
+                  className={`flex items-center gap-2 p-2 rounded-xl text-left text-xs font-semibold transition-all ${
+                    isNbActive
+                      ? 'bg-slate-800 text-white shadow-sm'
+                      : 'text-slate-300 hover:bg-slate-900 hover:text-white'
+                  }`}
+                >
+                  <span className="p-0.5 text-slate-400">
+                    {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                  </span>
+                  <span className="text-sm">{nb.icon}</span>
+                  <span className="flex-1 truncate">{nb.name}</span>
+                </button>
 
-                    return (
-                      <div key={grp.id} className="flex flex-col">
-                        {/* Group Header Row (e.g. GS I) */}
+                {/* Expandable Section Groups & Sections */}
+                {isExpanded && (
+                  <div className="ml-4 pl-2 border-l border-slate-800/80 flex flex-col gap-1 mt-1 my-1">
+                    
+                    {/* Render Section Groups (e.g. GS I, GS II, GS III, GS IV) */}
+                    {grps.map((grp) => {
+                      const isGrpExpanded = expandedGroups[grp.id] !== false;
+                      const childSecs = groupedSecsMap.get(grp.id) || [];
+
+                      return (
+                        <div key={grp.id} className="flex flex-col">
+                          {/* Group Header Row (e.g. GS I) */}
+                          <button
+                            onClick={(e) => toggleGroupExpand(grp.id, e)}
+                            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-left text-xs font-bold text-slate-400 hover:text-slate-200 hover:bg-slate-900/60 transition-colors uppercase tracking-wider"
+                          >
+                            <span className="text-slate-500">
+                              {isGrpExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                            </span>
+                            <span className="truncate">{grp.name}</span>
+                          </button>
+
+                          {/* Individual Subject Sections under Group */}
+                          {isGrpExpanded && (
+                            <div className="ml-4 flex flex-col gap-0.5 mt-0.5 mb-1">
+                              {childSecs.map((sec) => {
+                                const isSecActive = activeSectionId === sec.id;
+                                return (
+                                  <button
+                                    key={sec.id}
+                                    onClick={() => handleSelectSection(sec)}
+                                    className={`flex items-center gap-2 px-2 py-2 sm:py-1.5 rounded-lg text-left text-xs transition-colors ${
+                                      isSecActive
+                                        ? 'bg-brand-600/30 text-brand-300 font-semibold border border-brand-500/30 shadow-sm'
+                                        : 'text-slate-300 hover:bg-slate-900 hover:text-white'
+                                    }`}
+                                  >
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sec.color }} />
+                                    <span className="truncate">{sec.name}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Render Standalone Sections */}
+                    {standaloneSecs.map((sec) => {
+                      const isSecActive = activeSectionId === sec.id;
+                      return (
                         <button
-                          onClick={(e) => toggleGroupExpand(grp.id, e)}
-                          className="flex items-center gap-1.5 px-2 py-1 rounded-md text-left text-xs font-bold text-slate-400 hover:text-slate-200 hover:bg-slate-900/60 transition-colors uppercase tracking-wider"
+                          key={sec.id}
+                          onClick={() => handleSelectSection(sec)}
+                          className={`flex items-center gap-2 px-2 py-2 sm:py-1.5 rounded-lg text-left text-xs transition-colors ${
+                            isSecActive
+                              ? 'bg-brand-600/30 text-brand-300 font-semibold border border-brand-500/30 shadow-sm'
+                              : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                          }`}
                         >
-                          <span className="text-slate-500">
-                            {isGrpExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                          </span>
-                          <span className="truncate">{grp.name}</span>
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sec.color }} />
+                          <span className="truncate">{sec.name}</span>
                         </button>
+                      );
+                    })}
 
-                        {/* Individual Subject Sections under Group */}
-                        {isGrpExpanded && (
-                          <div className="ml-4 flex flex-col gap-0.5 mt-0.5 mb-1">
-                            {childSecs.map((sec) => {
-                              const isSecActive = activeSectionId === sec.id;
-                              return (
-                                <button
-                                  key={sec.id}
-                                  onClick={() => handleSelectSection(sec)}
-                                  className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors ${
-                                    isSecActive
-                                      ? 'bg-brand-600/30 text-brand-300 font-semibold border border-brand-500/30 shadow-sm'
-                                      : 'text-slate-300 hover:bg-slate-900 hover:text-white'
-                                  }`}
-                                >
-                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sec.color }} />
-                                  <span className="truncate">{sec.name}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
 
-                  {/* Render Standalone Sections (e.g. Essay, Current Affairs) */}
-                  {standaloneSecs.map((sec) => {
-                    const isSecActive = activeSectionId === sec.id;
-                    return (
-                      <button
-                        key={sec.id}
-                        onClick={() => handleSelectSection(sec)}
-                        className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors ${
-                          isSecActive
-                            ? 'bg-brand-600/30 text-brand-300 font-semibold border border-brand-500/30 shadow-sm'
-                            : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
-                        }`}
-                      >
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sec.color }} />
-                        <span className="truncate">{sec.name}</span>
-                      </button>
-                    );
-                  })}
+        {/* Quick Footer Links */}
+        <div className="p-2 border-t border-slate-800/80 flex flex-col gap-1 text-xs">
+          <button
+            onClick={() => setTemplatePickerOpen(true)}
+            className="flex items-center gap-2.5 p-2 rounded-xl text-slate-300 hover:bg-slate-900 hover:text-white transition-colors"
+          >
+            <LayoutTemplate className="w-4 h-4 text-brand-400" />
+            <span>UPSC Templates</span>
+          </button>
 
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Quick Footer Links */}
-      <div className="p-2 border-t border-slate-800/80 flex flex-col gap-1 text-xs">
-        <button
-          onClick={() => setTemplatePickerOpen(true)}
-          className="flex items-center gap-2.5 p-2 rounded-xl text-slate-300 hover:bg-slate-900 hover:text-white transition-colors"
-        >
-          <LayoutTemplate className="w-4 h-4 text-brand-400" />
-          <span>UPSC Templates</span>
-        </button>
-
-        <button
-          onClick={() => setStorageManagerOpen(true)}
-          className="flex items-center gap-2.5 p-2 rounded-xl text-slate-300 hover:bg-slate-900 hover:text-white transition-colors"
-        >
-          <Trash2 className="w-4 h-4 text-slate-400" />
-          <span>Trash & Storage</span>
-        </button>
-      </div>
-    </aside>
+          <button
+            onClick={() => setStorageManagerOpen(true)}
+            className="flex items-center gap-2.5 p-2 rounded-xl text-slate-300 hover:bg-slate-900 hover:text-white transition-colors"
+          >
+            <Trash2 className="w-4 h-4 text-slate-400" />
+            <span>Trash & Storage</span>
+          </button>
+        </div>
+      </aside>
+    </>
   );
 };
