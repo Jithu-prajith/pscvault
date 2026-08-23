@@ -51,10 +51,10 @@ class LocalStorageFallbackDB implements DBClient {
   }
 
   async select<T = any>(query: string, params: any[] = []): Promise<T> {
-    const fromMatch = query.match(/FROM\s+"?(\w+)"?/i);
+    const fromMatch = query.match(/FROM\s+("?\w+"?\.)?"?(\w+)"?/i);
     if (!fromMatch) return [] as unknown as T;
 
-    const tableName = fromMatch[1];
+    const tableName = fromMatch[2];
     const table = this.tables[tableName] || {};
     let rows = Object.values(table);
 
@@ -68,22 +68,26 @@ class LocalStorageFallbackDB implements DBClient {
       }
     }
 
-    // Filter out deleted_at unless explicitly querying soft deleted
+    // Filter out deleted_at unless explicitly querying soft deleted items
     if (!query.includes('deleted_at IS NOT NULL') && !query.includes('"deleted_at" IS NOT NULL')) {
       rows = rows.filter(r => !r.deleted_at && !r.deletedAt);
     }
 
     // Match WHERE parameter bindings ($1, $2...)
-    const paramMatches = [...query.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*\$(\d+)/g)];
-    if (paramMatches.length > 0 && params.length > 0) {
-      paramMatches.forEach(pm => {
-        const col = pm[2];
-        const paramIdx = parseInt(pm[3], 10) - 1;
-        if (paramIdx >= 0 && paramIdx < params.length) {
-          const val = params[paramIdx];
-          rows = rows.filter(r => r[col] === val || r[col] == val || r[camelCase(col)] === val);
-        }
-      });
+    const whereIdx = query.toUpperCase().indexOf('WHERE');
+    if (whereIdx !== -1) {
+      const whereClause = query.slice(whereIdx);
+      const paramMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*\$(\d+)/g)];
+      if (paramMatches.length > 0 && params.length > 0) {
+        paramMatches.forEach(pm => {
+          const col = pm[2];
+          const paramIdx = parseInt(pm[3], 10) - 1;
+          if (paramIdx >= 0 && paramIdx < params.length) {
+            const val = params[paramIdx];
+            rows = rows.filter(r => r[col] === val || r[col] == val || r[camelCase(col)] === val);
+          }
+        });
+      }
     }
 
     // Project columns to match exact requested SELECT order
@@ -101,13 +105,13 @@ class LocalStorageFallbackDB implements DBClient {
   }
 
   async execute(query: string, params: any[] = []): Promise<{ rowsAffected: number; lastInsertId?: number }> {
-    const insertMatch = query.match(/INSERT\s+INTO\s+"?(\w+)"?\s*\((.*?)\)\s*VALUES/i);
-    const updateMatch = query.match(/UPDATE\s+"?(\w+)"?\s+SET\s+(.*?)\s+WHERE\s+("?\w+"?\.)?"?(\w+)"?\s*=\s*\$(\d+)/i);
-    const deleteMatch = query.match(/DELETE\s+FROM\s+"?(\w+)"?\s+WHERE\s+("?\w+"?\.)?"?(\w+)"?\s*=\s*\$1/i);
+    const trimmed = query.trim();
 
+    // 1. INSERT Handler
+    const insertMatch = trimmed.match(/INSERT\s+INTO\s+("?\w+"?\.)?"?(\w+)"?\s*\((.*?)\)\s*VALUES/i);
     if (insertMatch) {
-      const tableName = insertMatch[1];
-      const cols = insertMatch[2].split(',').map(c => c.trim().replace(/"/g, ''));
+      const tableName = insertMatch[2];
+      const cols = insertMatch[3].split(',').map(c => c.trim().replace(/"/g, ''));
       if (!this.tables[tableName]) this.tables[tableName] = {};
 
       const row: Record<string, any> = {};
@@ -122,54 +126,98 @@ class LocalStorageFallbackDB implements DBClient {
       return { rowsAffected: 1 };
     }
 
-    if (updateMatch) {
-      const tableName = updateMatch[1];
-      const setClause = updateMatch[2];
-      const whereCol = updateMatch[4].replace(/"/g, '');
-      const paramIdx = parseInt(updateMatch[5], 10) - 1;
-      const targetVal = params[paramIdx];
+    // 2. UPDATE Handler
+    if (trimmed.toUpperCase().startsWith('UPDATE')) {
+      const tableMatch = trimmed.match(/UPDATE\s+("?\w+"?\.)?"?(\w+)"?/i);
+      if (tableMatch) {
+        const tableName = tableMatch[2];
+        if (this.tables[tableName]) {
+          const setMatch = trimmed.match(/SET\s+(.*?)\s+WHERE/i);
+          const setClause = setMatch ? setMatch[1] : '';
+          const setAssignments = setClause.split(',');
 
-      if (this.tables[tableName]) {
-        let count = 0;
-        Object.values(this.tables[tableName]).forEach(row => {
-          if (row[whereCol] === targetVal || row[camelCase(whereCol)] === targetVal) {
-            const setAssignments = setClause.split(',');
-            setAssignments.forEach(assign => {
-              const parts = assign.split('=');
-              if (parts.length === 2) {
-                const field = parts[0].trim().replace(/("?\w+"?\.)?"?/g, '');
-                const pMatch = parts[1].trim().match(/\$(\d+)/);
-                if (pMatch) {
-                  const pIdx = parseInt(pMatch[1], 10) - 1;
-                  row[field] = params[pIdx];
-                  row[camelCase(field)] = params[pIdx];
+          const whereIdx = trimmed.toUpperCase().indexOf('WHERE');
+          const whereClause = whereIdx !== -1 ? trimmed.slice(whereIdx) : '';
+          const paramMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*\$(\d+)/g)];
+
+          let count = 0;
+          Object.values(this.tables[tableName]).forEach(row => {
+            let matchesWhere = true;
+            if (paramMatches.length > 0) {
+              matchesWhere = paramMatches.every(pm => {
+                const col = pm[2];
+                const pIdx = parseInt(pm[3], 10) - 1;
+                if (pIdx >= 0 && pIdx < params.length) {
+                  const val = params[pIdx];
+                  return row[col] === val || row[col] == val || row[camelCase(col)] === val;
                 }
-              }
-            });
-            count++;
-          }
-        });
-        this.saveToStorage();
-        return { rowsAffected: count };
+                return true;
+              });
+            }
+
+            if (matchesWhere) {
+              setAssignments.forEach(assign => {
+                const parts = assign.split('=');
+                if (parts.length === 2) {
+                  const field = parts[0].trim().replace(/("?\w+"?\.)?"?/g, '').replace(/"/g, '');
+                  const pMatch = parts[1].trim().match(/\$(\d+)/);
+                  if (pMatch) {
+                    const pIdx = parseInt(pMatch[1], 10) - 1;
+                    if (pIdx >= 0 && pIdx < params.length) {
+                      row[field] = params[pIdx];
+                      row[camelCase(field)] = params[pIdx];
+                    }
+                  } else if (parts[1].trim().toUpperCase() === 'NULL') {
+                    row[field] = null;
+                    row[camelCase(field)] = null;
+                  }
+                }
+              });
+              count++;
+            }
+          });
+
+          this.saveToStorage();
+          return { rowsAffected: count };
+        }
       }
     }
 
-    if (deleteMatch) {
-      const tableName = deleteMatch[1];
-      const whereCol = deleteMatch[3].replace(/"/g, '');
-      const targetVal = params[0];
+    // 3. DELETE Handler
+    if (trimmed.toUpperCase().startsWith('DELETE')) {
+      const tableMatch = trimmed.match(/DELETE\s+FROM\s+("?\w+"?\.)?"?(\w+)"?/i);
+      if (tableMatch) {
+        const tableName = tableMatch[2];
+        if (this.tables[tableName]) {
+          const whereIdx = trimmed.toUpperCase().indexOf('WHERE');
+          const whereClause = whereIdx !== -1 ? trimmed.slice(whereIdx) : '';
+          const paramMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*\$(\d+)/g)];
 
-      if (this.tables[tableName]) {
-        let count = 0;
-        Object.keys(this.tables[tableName]).forEach(key => {
-          const row = this.tables[tableName][key];
-          if (row[whereCol] === targetVal || row[camelCase(whereCol)] === targetVal) {
-            delete this.tables[tableName][key];
-            count++;
-          }
-        });
-        this.saveToStorage();
-        return { rowsAffected: count };
+          let count = 0;
+          Object.keys(this.tables[tableName]).forEach(key => {
+            const row = this.tables[tableName][key];
+            let matchesWhere = true;
+            if (paramMatches.length > 0) {
+              matchesWhere = paramMatches.every(pm => {
+                const col = pm[2];
+                const pIdx = parseInt(pm[3], 10) - 1;
+                if (pIdx >= 0 && pIdx < params.length) {
+                  const val = params[pIdx];
+                  return row[col] === val || row[col] == val || row[camelCase(col)] === val;
+                }
+                return true;
+              });
+            }
+
+            if (matchesWhere) {
+              delete this.tables[tableName][key];
+              count++;
+            }
+          });
+
+          this.saveToStorage();
+          return { rowsAffected: count };
+        }
       }
     }
 
