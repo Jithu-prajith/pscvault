@@ -43,14 +43,18 @@ export class LocalSectionRepository implements ISectionRepository {
     return newSection;
   }
 
-  async createGroup(notebookId: string, name: string): Promise<SectionGroup> {
+  async createGroup(data: string | { notebookId: string; name: string; position?: string }, name?: string): Promise<SectionGroup> {
     const now = nowISO();
     const id = generateUUIDv7();
+    const notebookId = typeof data === 'string' ? data : data.notebookId;
+    const grpName = typeof data === 'string' ? (name || 'New Group') : data.name;
+    const position = typeof data === 'object' && data.position ? data.position : 'a0';
+
     const newGrp: SectionGroup = {
       id,
       notebookId,
-      name,
-      position: 'a0',
+      name: grpName,
+      position,
       version: 1,
       createdAt: now,
       updatedAt: now,

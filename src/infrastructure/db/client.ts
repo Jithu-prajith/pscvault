@@ -50,6 +50,53 @@ class LocalStorageFallbackDB implements DBClient {
     }
   }
 
+  private matchesWhere(row: Record<string, any>, query: string, params: any[], paramOffset = 0): boolean {
+    const whereIdx = query.toUpperCase().indexOf('WHERE');
+    if (whereIdx === -1) return true;
+
+    const whereClause = query.slice(whereIdx);
+
+    // 1. Check parameter equality ($1, $2...) or (?)
+    const paramMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*(\$(\d+)|\?)/g)];
+    let paramCounter = paramOffset;
+
+    for (const pm of paramMatches) {
+      const col = pm[2];
+      const pIdxStr = pm[4];
+      const pIdx = pIdxStr ? parseInt(pIdxStr, 10) - 1 : paramCounter++;
+
+      if (pIdx >= 0 && pIdx < params.length) {
+        const val = params[pIdx];
+        const rVal = row[col] !== undefined ? row[col] : row[camelCase(col)];
+        if (rVal !== val && String(rVal) !== String(val)) {
+          return false;
+        }
+      }
+    }
+
+    // 2. Check IS NULL conditions (e.g. deleted_at IS NULL)
+    const isNullMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s+IS\s+NULL/gi)];
+    for (const pm of isNullMatches) {
+      const col = pm[2];
+      const rVal = row[col] !== undefined ? row[col] : row[camelCase(col)];
+      if (rVal !== null && rVal !== undefined) {
+        return false;
+      }
+    }
+
+    // 3. Check IS NOT NULL conditions (e.g. deleted_at IS NOT NULL)
+    const isNotNullMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s+IS\s+NOT\s+NULL/gi)];
+    for (const pm of isNotNullMatches) {
+      const col = pm[2];
+      const rVal = row[col] !== undefined ? row[col] : row[camelCase(col)];
+      if (rVal === null || rVal === undefined) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   async select<T = any>(query: string, params: any[] = []): Promise<T> {
     const fromMatch = query.match(/FROM\s+("?\w+"?\.)?"?(\w+)"?/i);
     if (!fromMatch) return [] as unknown as T;
@@ -57,6 +104,34 @@ class LocalStorageFallbackDB implements DBClient {
     const tableName = fromMatch[2];
     const table = this.tables[tableName] || {};
     let rows = Object.values(table);
+
+    // Handle INNER JOIN if present
+    const joinMatches = [...query.matchAll(/INNER\s+JOIN\s+("?\w+"?\.)?"?(\w+)"?\s+ON\s+("?\w+"?\.)?"?(\w+)"?\s*=\s*("?\w+"?\.)?"?(\w+)"?/gi)];
+    if (joinMatches.length > 0) {
+      joinMatches.forEach(jm => {
+        const joinTableName = jm[2];
+        const leftCol = jm[4];
+        const rightCol = jm[6];
+
+        const joinTable = this.tables[joinTableName] || {};
+        const joinRows = Object.values(joinTable);
+
+        const joined: Record<string, any>[] = [];
+        rows.forEach(r1 => {
+          const leftVal = r1[leftCol] !== undefined ? r1[leftCol] : r1[camelCase(leftCol)];
+          joinRows.forEach(r2 => {
+            const rightVal = r2[rightCol] !== undefined ? r2[rightCol] : r2[camelCase(rightCol)];
+            if (leftVal !== undefined && (leftVal === rightVal || String(leftVal) === String(rightVal))) {
+              joined.push({ ...r2, ...r1 }); // Merged row attributes
+            }
+          });
+        });
+        rows = joined;
+      });
+    }
+
+    // Filter rows according to WHERE clause
+    rows = rows.filter(r => this.matchesWhere(r, query, params, 0));
 
     // Extract selected columns from SELECT clause
     const selectMatch = query.match(/SELECT\s+(.*?)\s+FROM/i);
@@ -68,34 +143,13 @@ class LocalStorageFallbackDB implements DBClient {
       }
     }
 
-    // Filter out deleted_at unless explicitly querying soft deleted items
-    if (!query.includes('deleted_at IS NOT NULL') && !query.includes('"deleted_at" IS NOT NULL')) {
-      rows = rows.filter(r => !r.deleted_at && !r.deletedAt);
-    }
-
-    // Match WHERE parameter bindings ($1, $2...)
-    const whereIdx = query.toUpperCase().indexOf('WHERE');
-    if (whereIdx !== -1) {
-      const whereClause = query.slice(whereIdx);
-      const paramMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*\$(\d+)/g)];
-      if (paramMatches.length > 0 && params.length > 0) {
-        paramMatches.forEach(pm => {
-          const col = pm[2];
-          const paramIdx = parseInt(pm[3], 10) - 1;
-          if (paramIdx >= 0 && paramIdx < params.length) {
-            const val = params[paramIdx];
-            rows = rows.filter(r => r[col] === val || r[col] == val || r[camelCase(col)] === val);
-          }
-        });
-      }
-    }
-
-    // Project columns to match exact requested SELECT order
+    // Project columns to match exact requested SELECT order expected by Drizzle ORM positional decoder
     if (selectedCols.length > 0) {
       rows = rows.map(r => {
         const projected: Record<string, any> = {};
         selectedCols.forEach(col => {
-          projected[col] = r[col] !== undefined ? r[col] : r[camelCase(col)];
+          const val = r[col] !== undefined ? r[col] : r[camelCase(col)];
+          projected[col] = val !== undefined ? val : null;
         });
         return projected;
       });
@@ -132,45 +186,42 @@ class LocalStorageFallbackDB implements DBClient {
       if (tableMatch) {
         const tableName = tableMatch[2];
         if (this.tables[tableName]) {
-          const setMatch = trimmed.match(/SET\s+(.*?)\s+WHERE/i);
-          const setClause = setMatch ? setMatch[1] : '';
-          const setAssignments = setClause.split(',');
-
+          const setIdx = trimmed.toUpperCase().indexOf('SET');
           const whereIdx = trimmed.toUpperCase().indexOf('WHERE');
-          const whereClause = whereIdx !== -1 ? trimmed.slice(whereIdx) : '';
-          const paramMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*\$(\d+)/g)];
+          const setClause = setIdx !== -1 ? trimmed.slice(setIdx + 3, whereIdx !== -1 ? whereIdx : undefined) : '';
+
+          const setAssignments = [...setClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*(\$(\d+)|\?|NULL|'[^']*'|"[^"]*"\s*\+\s*\d+|\w+\s*\+\s*\d+|\d+)/gi)];
+          let paramCounter = 0;
+          const setParamCount = setAssignments.filter(a => a[3] === '?' || a[4] !== undefined).length;
 
           let count = 0;
           Object.values(this.tables[tableName]).forEach(row => {
-            let matchesWhere = true;
-            if (paramMatches.length > 0) {
-              matchesWhere = paramMatches.every(pm => {
-                const col = pm[2];
-                const pIdx = parseInt(pm[3], 10) - 1;
-                if (pIdx >= 0 && pIdx < params.length) {
-                  const val = params[pIdx];
-                  return row[col] === val || row[col] == val || row[camelCase(col)] === val;
-                }
-                return true;
-              });
-            }
-
-            if (matchesWhere) {
+            if (this.matchesWhere(row, trimmed, params, setParamCount)) {
+              paramCounter = 0;
               setAssignments.forEach(assign => {
-                const parts = assign.split('=');
-                if (parts.length === 2) {
-                  const field = parts[0].trim().replace(/("?\w+"?\.)?"?/g, '').replace(/"/g, '');
-                  const pMatch = parts[1].trim().match(/\$(\d+)/);
-                  if (pMatch) {
-                    const pIdx = parseInt(pMatch[1], 10) - 1;
-                    if (pIdx >= 0 && pIdx < params.length) {
-                      row[field] = params[pIdx];
-                      row[camelCase(field)] = params[pIdx];
-                    }
-                  } else if (parts[1].trim().toUpperCase() === 'NULL') {
-                    row[field] = null;
-                    row[camelCase(field)] = null;
+                const field = assign[2];
+                const valExpr = assign[3].toUpperCase();
+                const pIdxStr = assign[4];
+
+                if (pIdxStr) {
+                  const pIdx = parseInt(pIdxStr, 10) - 1;
+                  if (pIdx >= 0 && pIdx < params.length) {
+                    row[field] = params[pIdx];
+                    row[camelCase(field)] = params[pIdx];
                   }
+                } else if (valExpr === '?') {
+                  const pIdx = paramCounter++;
+                  if (pIdx < params.length) {
+                    row[field] = params[pIdx];
+                    row[camelCase(field)] = params[pIdx];
+                  }
+                } else if (valExpr === 'NULL') {
+                  row[field] = null;
+                  row[camelCase(field)] = null;
+                } else if (valExpr.includes('+')) {
+                  const currentVal = Number(row[field] || row[camelCase(field)] || 1);
+                  row[field] = currentVal + 1;
+                  row[camelCase(field)] = currentVal + 1;
                 }
               });
               count++;
@@ -189,27 +240,10 @@ class LocalStorageFallbackDB implements DBClient {
       if (tableMatch) {
         const tableName = tableMatch[2];
         if (this.tables[tableName]) {
-          const whereIdx = trimmed.toUpperCase().indexOf('WHERE');
-          const whereClause = whereIdx !== -1 ? trimmed.slice(whereIdx) : '';
-          const paramMatches = [...whereClause.matchAll(/("?\w+"?\.)?"?(\w+)"?\s*=\s*\$(\d+)/g)];
-
           let count = 0;
           Object.keys(this.tables[tableName]).forEach(key => {
             const row = this.tables[tableName][key];
-            let matchesWhere = true;
-            if (paramMatches.length > 0) {
-              matchesWhere = paramMatches.every(pm => {
-                const col = pm[2];
-                const pIdx = parseInt(pm[3], 10) - 1;
-                if (pIdx >= 0 && pIdx < params.length) {
-                  const val = params[pIdx];
-                  return row[col] === val || row[col] == val || row[camelCase(col)] === val;
-                }
-                return true;
-              });
-            }
-
-            if (matchesWhere) {
+            if (this.matchesWhere(row, trimmed, params, 0)) {
               delete this.tables[tableName][key];
               count++;
             }
