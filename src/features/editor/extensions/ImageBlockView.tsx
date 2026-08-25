@@ -2,31 +2,63 @@ import React, { useState, useRef, useEffect } from 'react';
 import { NodeViewWrapper, NodeViewProps } from '@tiptap/react';
 import {
   RotateCw, Maximize2, Trash2, AlignLeft, AlignCenter, AlignRight,
-  Highlighter, Edit3, Crop, Lock, Unlock, ArrowUp, ArrowDown, Copy
+  Highlighter, Edit3, Crop, Lock, Unlock, ArrowUp, ArrowDown, Copy,
+  Scaling, Check
 } from 'lucide-react';
 import { useUIStore } from '../../../stores/uiStore';
 import { DrawingStroke, StrokePoint } from '../../../domain/types';
+import { resolveAssetUrl } from '../../../infrastructure/fs/fileService';
 
 export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes, deleteNode, selected }) => {
-  const { src, alt, title, width, rotation, alignment, zIndex, locked, annotations } = node.attrs;
+  const { src, storagePath, alt, title, width, rotation, alignment, zIndex, locked, annotations } = node.attrs;
   const openFullscreen = useUIStore((s) => s.openFullscreenViewer);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Resolved Src state to prevent disappearing images after refresh
+  const [resolvedSrc, setResolvedSrc] = useState<string>(src || '');
+
   // Mode states
   const [annotating, setAnnotating] = useState(false);
   const [tool, setTool] = useState<'highlighter' | 'pen' | 'eraser'>('highlighter');
-  const [strokeColor, setStrokeColor] = useState('#fde047'); // Yellow highlighter default
-  const [strokeWidth, setStrokeWidth] = useState(16); // Thicker for highlighter
+  const [strokeColor, setStrokeColor] = useState('#fde047');
+  const [strokeWidth, setStrokeWidth] = useState(16);
 
   const [currentStrokes, setCurrentStrokes] = useState<DrawingStroke[]>(annotations || []);
   const [isDrawing, setIsDrawing] = useState(false);
   const [activePoints, setActivePoints] = useState<StrokePoint[]>([]);
 
   const [currentRotation, setCurrentRotation] = useState<number>(rotation || 0);
-  const [currentWidth, setCurrentWidth] = useState<number>(width || 500);
+  const [currentWidth, setCurrentWidth] = useState<number | string>(width || 500);
+
+  // Real-time Sideways Drag Resizing state
+  const [isResizing, setIsResizing] = useState(false);
+  const isResizingRef = useRef(false);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(500);
+  const resizeDirRef = useRef<'right' | 'left'>('right');
+
+  // Load persistent asset URL on mount/update
+  useEffect(() => {
+    let isMounted = true;
+    async function loadSrc() {
+      if (src && (src.startsWith('data:') || src.startsWith('http://') || src.startsWith('https://'))) {
+        if (isMounted) setResolvedSrc(src);
+        return;
+      }
+      if (storagePath) {
+        const url = await resolveAssetUrl(storagePath);
+        if (isMounted && url) setResolvedSrc(url);
+      } else if (src) {
+        const url = await resolveAssetUrl(src);
+        if (isMounted && url) setResolvedSrc(url);
+      }
+    }
+    loadSrc();
+    return () => { isMounted = false; };
+  }, [src, storagePath]);
 
   useEffect(() => {
     setCurrentStrokes(annotations || []);
@@ -41,7 +73,8 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = img.clientWidth || currentWidth;
+    const numWidth = typeof currentWidth === 'number' ? currentWidth : img.clientWidth || 500;
+    canvas.width = img.clientWidth || numWidth;
     canvas.height = img.clientHeight || 350;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -130,19 +163,64 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
     setActivePoints([]);
   };
 
-  // Rotation Handle Drag
+  // Rotation Handle
   const handleRotateClick = () => {
     const nextRot = (currentRotation + 45) % 360;
     setCurrentRotation(nextRot);
     updateAttributes({ rotation: nextRot });
   };
 
-  // Corner Resize Handler
-  const handleCornerResize = (e: React.MouseEvent, factor: number) => {
+  // --- REAL-TIME SIDEWAYS DRAG RESIZING HANDLERS ---
+  const startSideResize = (e: React.PointerEvent, dir: 'right' | 'left') => {
+    e.preventDefault();
     e.stopPropagation();
-    const newW = Math.max(200, Math.min(1200, currentWidth + factor));
-    setCurrentWidth(newW);
-    updateAttributes({ width: newW });
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+
+    isResizingRef.current = true;
+    setIsResizing(true);
+    startXRef.current = e.clientX;
+    const currentPx = imgRef.current?.clientWidth || (typeof currentWidth === 'number' ? currentWidth : 500);
+    startWidthRef.current = currentPx;
+    resizeDirRef.current = dir;
+  };
+
+  const handleSideResizeMove = (e: React.PointerEvent) => {
+    if (!isResizingRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const deltaX = e.clientX - startXRef.current;
+    let newPx = startWidthRef.current;
+
+    if (resizeDirRef.current === 'right') {
+      newPx = startWidthRef.current + deltaX;
+    } else {
+      newPx = startWidthRef.current - deltaX;
+    }
+
+    const clamped = Math.max(180, Math.min(1600, Math.round(newPx)));
+    setCurrentWidth(clamped);
+  };
+
+  const stopSideResize = (e: React.PointerEvent) => {
+    if (!isResizingRef.current) return;
+    isResizingRef.current = false;
+    setIsResizing(false);
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+
+    if (typeof currentWidth === 'number') {
+      updateAttributes({ width: currentWidth });
+    }
+  };
+
+  // Quick Preset Width Helper
+  const setPresetWidth = (preset: number | string) => {
+    setCurrentWidth(preset);
+    updateAttributes({ width: preset });
   };
 
   const alignClasses = {
@@ -151,12 +229,14 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
     right: 'ml-auto text-right',
   }[alignment as 'left' | 'center' | 'right'] || 'mx-auto text-center';
 
+  const widthStyle = typeof currentWidth === 'number' ? `${currentWidth}px` : currentWidth;
+
   return (
     <NodeViewWrapper className={`my-6 select-none group relative inline-block w-full ${alignClasses}`}>
       <div
         ref={containerRef}
         style={{
-          width: `${currentWidth}px`,
+          width: widthStyle,
           transform: `rotate(${currentRotation}deg)`,
           zIndex: zIndex || 1,
         }}
@@ -176,8 +256,47 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
           </button>
         )}
 
-        {/* Toolbar Header (Selection / Annotation Mode Controls) */}
+        {/* Live Resize Badge */}
+        {isResizing && (
+          <div className="absolute -top-8 left-2 bg-brand-600 text-white font-mono text-[11px] px-2 py-0.5 rounded-md shadow-md z-40">
+            {typeof currentWidth === 'number' ? `${currentWidth}px Sideways` : currentWidth}
+          </div>
+        )}
+
+        {/* Toolbar Header (Selection / Annotation / Resizing Controls) */}
         <div className="absolute top-2 right-2 flex items-center gap-1 bg-slate-900/90 backdrop-blur-md text-white px-2.5 py-1.5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity z-30 text-xs shadow-lg">
+          {/* Sideways Preset Width Controls */}
+          <button
+            onClick={() => setPresetWidth(300)}
+            className={`px-1.5 py-0.5 hover:bg-slate-800 rounded font-mono text-[10px] ${currentWidth === 300 ? 'text-brand-400 font-bold' : 'text-slate-300'}`}
+            title="Enlarge 300px"
+          >
+            Small
+          </button>
+          <button
+            onClick={() => setPresetWidth(600)}
+            className={`px-1.5 py-0.5 hover:bg-slate-800 rounded font-mono text-[10px] ${currentWidth === 600 ? 'text-brand-400 font-bold' : 'text-slate-300'}`}
+            title="Enlarge 600px"
+          >
+            Medium
+          </button>
+          <button
+            onClick={() => setPresetWidth(900)}
+            className={`px-1.5 py-0.5 hover:bg-slate-800 rounded font-mono text-[10px] ${currentWidth === 900 ? 'text-brand-400 font-bold' : 'text-slate-300'}`}
+            title="Enlarge 900px Sideways"
+          >
+            Large
+          </button>
+          <button
+            onClick={() => setPresetWidth('100%')}
+            className={`px-1.5 py-0.5 hover:bg-slate-800 rounded font-mono text-[10px] ${currentWidth === '100%' ? 'text-brand-400 font-bold' : 'text-slate-300'}`}
+            title="Full Width Sideways (100%)"
+          >
+            100%
+          </button>
+
+          <span className="w-px h-3 bg-slate-700 mx-0.5" />
+
           {/* Alignment */}
           <button
             onClick={() => updateAttributes({ alignment: 'left' })}
@@ -226,7 +345,7 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
 
           {/* Fullscreen & Delete */}
           <button
-            onClick={() => openFullscreen('image', src, title || alt || 'Image Preview')}
+            onClick={() => openFullscreen('image', resolvedSrc || src, title || alt || 'Image Preview')}
             className="p-1 hover:bg-slate-800 rounded-lg"
             title="Full Screen Viewer"
           >
@@ -291,11 +410,17 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
         <div className="relative rounded-2xl overflow-hidden bg-slate-100 dark:bg-slate-900">
           <img
             ref={imgRef}
-            src={src}
+            src={resolvedSrc || src}
             alt={alt || ''}
             title={title || ''}
-            style={{ width: `${currentWidth}px`, height: 'auto', display: 'block' }}
-            className="rounded-2xl object-contain"
+            style={{ width: widthStyle, height: 'auto', display: 'block' }}
+            className="rounded-2xl object-contain transition-all"
+            onError={async () => {
+              if (storagePath) {
+                const url = await resolveAssetUrl(storagePath);
+                if (url && url !== resolvedSrc) setResolvedSrc(url);
+              }
+            }}
           />
 
           {/* Scalable Canvas Overlay for Highlights & Pen Annotations */}
@@ -308,18 +433,51 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
           />
         </div>
 
-        {/* Corner Resize Handles when Selected */}
+        {/* --- REAL-TIME SIDEWAYS DRAG RESIZE HANDLES --- */}
         {selected && !locked && (
           <>
-            <button
-              onMouseDown={(e) => handleCornerResize(e, 50)}
-              className="absolute -bottom-2 -right-2 w-4 h-4 rounded-full bg-brand-500 border-2 border-white shadow cursor-se-resize z-30"
-              title="Resize Image"
+            {/* Right Edge Sideways Drag Handle */}
+            <div
+              onPointerDown={(e) => startSideResize(e, 'right')}
+              onPointerMove={handleSideResizeMove}
+              onPointerUp={stopSideResize}
+              className="absolute top-1/2 -right-3 -translate-y-1/2 w-6 h-12 flex items-center justify-center cursor-ew-resize group/handle z-30 touch-none"
+              title="Drag Sideways to Enlarge Image Width"
+            >
+              <div className="w-3 h-8 rounded-full bg-brand-600 border-2 border-white shadow-lg flex flex-col items-center justify-center gap-0.5 group-hover/handle:scale-125 transition-transform">
+                <span className="w-1 h-1 rounded-full bg-white" />
+                <span className="w-1 h-1 rounded-full bg-white" />
+              </div>
+            </div>
+
+            {/* Left Edge Sideways Drag Handle */}
+            <div
+              onPointerDown={(e) => startSideResize(e, 'left')}
+              onPointerMove={handleSideResizeMove}
+              onPointerUp={stopSideResize}
+              className="absolute top-1/2 -left-3 -translate-y-1/2 w-6 h-12 flex items-center justify-center cursor-ew-resize group/handle z-30 touch-none"
+              title="Drag Sideways to Enlarge Image Width"
+            >
+              <div className="w-3 h-8 rounded-full bg-brand-600 border-2 border-white shadow-lg flex flex-col items-center justify-center gap-0.5 group-hover/handle:scale-125 transition-transform">
+                <span className="w-1 h-1 rounded-full bg-white" />
+                <span className="w-1 h-1 rounded-full bg-white" />
+              </div>
+            </div>
+
+            {/* Corner Handles */}
+            <div
+              onPointerDown={(e) => startSideResize(e, 'right')}
+              onPointerMove={handleSideResizeMove}
+              onPointerUp={stopSideResize}
+              className="absolute -bottom-2 -right-2 w-5 h-5 rounded-full bg-brand-600 border-2 border-white shadow-lg cursor-nwse-resize hover:scale-125 transition-transform z-30 touch-none"
+              title="Drag Corner to Enlarge Image"
             />
-            <button
-              onMouseDown={(e) => handleCornerResize(e, -50)}
-              className="absolute -bottom-2 -left-2 w-4 h-4 rounded-full bg-brand-500 border-2 border-white shadow cursor-sw-resize z-30"
-              title="Shrink Image"
+            <div
+              onPointerDown={(e) => startSideResize(e, 'left')}
+              onPointerMove={handleSideResizeMove}
+              onPointerUp={stopSideResize}
+              className="absolute -bottom-2 -left-2 w-5 h-5 rounded-full bg-brand-600 border-2 border-white shadow-lg cursor-nesw-resize hover:scale-125 transition-transform z-30 touch-none"
+              title="Drag Corner to Enlarge Image"
             />
           </>
         )}

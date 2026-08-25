@@ -30,7 +30,7 @@ export const ClipboardPasteHandler = Extension.create({
 
               editor.chain().focus().insertContent({
                 type: 'imageBlock',
-                attrs: { src: saved.assetUrl, alt: name },
+                attrs: { src: saved.assetUrl, storagePath: saved.storagePath, alt: name },
               }).run();
             })();
 

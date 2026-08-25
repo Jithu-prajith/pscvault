@@ -11,6 +11,7 @@ export const AudioBlock = Node.create({
   addAttributes() {
     return {
       attachmentId:    { default: null },
+      storagePath:     { default: null },
       src:             { default: null },
       fileName:        { default: 'Audio Recording.webm' },
       fileSize:        { default: 0 },

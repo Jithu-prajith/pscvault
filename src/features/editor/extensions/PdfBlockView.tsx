@@ -1,17 +1,40 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NodeViewWrapper, NodeViewProps } from '@tiptap/react';
-import { FileText, Eye, Download, Trash2, Sparkles, FileCheck } from 'lucide-react';
+import { FileText, Eye, Download, Trash2, Sparkles } from 'lucide-react';
 import { formatBytes } from '../../../lib/utils';
 import { useUIStore } from '../../../stores/uiStore';
+import { resolveAssetUrl } from '../../../infrastructure/fs/fileService';
 
 export const PdfBlockView: React.FC<NodeViewProps> = ({ node, deleteNode, selected }) => {
-  const { src, fileName, fileSize, pageCount } = node.attrs;
+  const { src, storagePath, fileName, fileSize, pageCount } = node.attrs;
   const openFullscreen = useUIStore((s) => s.openFullscreenViewer);
 
+  const [resolvedSrc, setResolvedSrc] = useState<string>(src || '');
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadSrc() {
+      if (src && (src.startsWith('data:') || src.startsWith('http://') || src.startsWith('https://'))) {
+        if (isMounted) setResolvedSrc(src);
+        return;
+      }
+      if (storagePath) {
+        const url = await resolveAssetUrl(storagePath);
+        if (isMounted && url) setResolvedSrc(url);
+      } else if (src) {
+        const url = await resolveAssetUrl(src);
+        if (isMounted && url) setResolvedSrc(url);
+      }
+    }
+    loadSrc();
+    return () => { isMounted = false; };
+  }, [src, storagePath]);
+
   const handleDownload = () => {
-    if (!src) return;
+    const targetUrl = resolvedSrc || src;
+    if (!targetUrl) return;
     const a = document.createElement('a');
-    a.href = src;
+    a.href = targetUrl;
     a.download = fileName || 'document.pdf';
     a.click();
   };
@@ -49,7 +72,7 @@ export const PdfBlockView: React.FC<NodeViewProps> = ({ node, deleteNode, select
         {/* Right: Actions */}
         <div className="flex items-center gap-2 w-full sm:w-auto justify-end border-t sm:border-t-0 border-slate-800 pt-2 sm:pt-0">
           <button
-            onClick={() => openFullscreen('pdf', src, fileName || 'PDF Document')}
+            onClick={() => openFullscreen('pdf', resolvedSrc || src, fileName || 'PDF Document')}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-medium transition-colors"
           >
             <Eye className="w-3.5 h-3.5" />

@@ -4,6 +4,7 @@ import { LocalSectionRepository } from '../src/infrastructure/repositories/Local
 import { LocalPageRepository } from '../src/infrastructure/repositories/LocalPageRepository';
 import { LocalAttachmentRepository } from '../src/infrastructure/repositories/LocalAttachmentRepository';
 import { LocalTagRepository } from '../src/infrastructure/repositories/LocalTagRepository';
+import { saveAttachmentFile, resolveAssetUrl } from '../src/infrastructure/fs/fileService';
 
 // Setup Mock LocalStorage for Node testing environment
 const memoryStore: Record<string, string> = {};
@@ -201,7 +202,22 @@ async function runTestSuite() {
   const pageTagsAfterRemove = await tagRepo.getPageTags(topic1.id);
   assert(pageTagsAfterRemove.length === 0, 'Remove Tag from Page');
 
-  console.log('\n--- TEST GROUP 6: PERSISTENCE & STORAGE RELOAD VERIFICATION ---');
+  console.log('\n--- TEST GROUP 6: ATTACHMENT FILE STORAGE & ASSET URL PERSISTENCE ---');
+  // 1. Save Image Binary File
+  const mockImageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]); // PNG Header
+  const savedImage = await saveAttachmentFile(mockImageBytes, 'UPSC_Map_India.png', 'image');
+  assert(!!savedImage.storagePath && savedImage.assetUrl.startsWith('data:image/'), 'Save Image File & Generate Persistent Asset Data URL');
+
+  // 2. Resolve Asset URL across Reload
+  const resolvedUrl = await resolveAssetUrl(savedImage.storagePath);
+  assert(resolvedUrl === savedImage.assetUrl && resolvedUrl.length > 20, 'Resolve Asset URL from Storage Path after Reload');
+
+  // 3. Save PDF Binary File
+  const mockPdfBytes = new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55]); // %PDF-1.7
+  const savedPdf = await saveAttachmentFile(mockPdfBytes, 'UPSC_Syllabus_2027.pdf', 'pdf');
+  assert(savedPdf.assetUrl.startsWith('data:application/pdf'), 'Save PDF File & Generate Persistent Data URL');
+
+  console.log('\n--- TEST GROUP 7: PERSISTENCE & STORAGE RELOAD VERIFICATION ---');
   // Re-instantiate new repository instances reading from the same memoryStore (simulating page reload)
   const reloadedPageRepo = new LocalPageRepository();
   const reloadedWorkspaceRepo = new LocalWorkspaceRepository();
@@ -213,15 +229,18 @@ async function runTestSuite() {
   assert(reloadedPages.length === 2, 'Persisted Active Pages Count after Reload');
 
   const reloadedTopic = await reloadedPageRepo.getById(topic1.id);
-  console.log('DEBUG reloadedTopic:', reloadedTopic);
   assert(reloadedTopic?.title.includes('Updated') && reloadedTopic?.version >= 1, 'Persisted Updated Topic Content & Version after Reload');
+
+  // Verify attachment asset URL resolves cleanly after full storage reload
+  const reloadedAssetUrl = await resolveAssetUrl(savedImage.storagePath);
+  assert(reloadedAssetUrl.startsWith('data:image/'), 'Persisted Attachment Image Asset URL resolves after Storage Reload');
 
   console.log('\n====================================================');
   console.log(`📊 TEST SUMMARY: ${passedTests} / ${totalTests} TESTS PASSED`);
   console.log('====================================================');
 
   if (passedTests === totalTests) {
-    console.log('🎉 ALL CRUD OPERATIONS EXECUTED SUCCESSFULLY WITH 100% PASS RATE!');
+    console.log('🎉 ALL CRUD & ATTACHMENT PERSISTENCE TESTS EXECUTED SUCCESSFULLY WITH 100% PASS RATE!');
   } else {
     console.error('❌ SOME TESTS FAILED. CHECK LOGS ABOVE.');
     process.exit(1);

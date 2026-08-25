@@ -11,6 +11,7 @@ export const ImageBlock = Node.create({
   addAttributes() {
     return {
       attachmentId: { default: null },
+      storagePath:  { default: null },
       src:          { default: null },
       alt:          { default: '' },
       title:        { default: '' },

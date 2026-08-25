@@ -11,6 +11,7 @@ export const FileBlock = Node.create({
   addAttributes() {
     return {
       attachmentId: { default: null },
+      storagePath:  { default: null },
       src:          { default: null },
       fileName:     { default: 'File' },
       fileSize:     { default: 0 },

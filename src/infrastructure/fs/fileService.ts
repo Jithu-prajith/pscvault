@@ -59,8 +59,17 @@ export interface SavedFile {
   sha256Hash: string;
 }
 
-// Memory blob cache for browser fallback mode
+// Memory blob cache for fast access
 const blobUrlCache = new Map<string, string>();
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
 
 export async function saveAttachmentFile(
   data: Uint8Array,
@@ -101,14 +110,29 @@ export async function saveAttachmentFile(
 
       return { fileName, storagePath, absolutePath, assetUrl, sha256Hash };
     } catch (e) {
-      console.warn('Tauri FS write failed, falling back to blob URL:', e);
+      console.warn('Tauri FS write failed, falling back to persistent data URL:', e);
     }
   }
 
-  // Browser Fallback: Blob URL
+  // Browser Fallback: Convert Uint8Array to persistent Data URL (Base64)
   const mimeType = classifyMediaType(originalFileName);
-  const blob = new Blob([data.buffer as ArrayBuffer], { type: mimeType });
-  const assetUrl = URL.createObjectURL(blob);
+  let mimeStr = 'application/octet-stream';
+  if (mediaType === 'image') mimeStr = ext ? `image/${ext === 'jpg' ? 'jpeg' : ext}` : 'image/png';
+  if (mediaType === 'pdf') mimeStr = 'application/pdf';
+  if (mediaType === 'audio') mimeStr = ext ? `audio/${ext}` : 'audio/webm';
+
+  const base64 = uint8ArrayToBase64(data);
+  const assetUrl = `data:${mimeStr};base64,${base64}`;
+
+  // Save to persistent browser storage
+  try {
+    const store = JSON.parse(localStorage.getItem('pscvault_attachment_blobs') || '{}');
+    store[storagePath] = assetUrl;
+    localStorage.setItem('pscvault_attachment_blobs', JSON.stringify(store));
+  } catch (e) {
+    console.warn('Attachment storage warn:', e);
+  }
+
   blobUrlCache.set(storagePath, assetUrl);
 
   return {
@@ -121,8 +145,29 @@ export async function saveAttachmentFile(
 }
 
 export async function resolveAssetUrl(storagePath: string): Promise<string> {
+  if (!storagePath) return '';
+  if (
+    storagePath.startsWith('data:') ||
+    storagePath.startsWith('http://') ||
+    storagePath.startsWith('https://') ||
+    storagePath.startsWith('blob:')
+  ) {
+    return storagePath;
+  }
+
   if (blobUrlCache.has(storagePath)) {
     return blobUrlCache.get(storagePath)!;
+  }
+
+  // Check persistent localStorage blob store
+  try {
+    const store = JSON.parse(localStorage.getItem('pscvault_attachment_blobs') || '{}');
+    if (store[storagePath]) {
+      blobUrlCache.set(storagePath, store[storagePath]);
+      return store[storagePath];
+    }
+  } catch (e) {
+    console.warn('Failed reading attachment from localStorage:', e);
   }
 
   if (isTauriEnv) {
@@ -142,8 +187,15 @@ export async function resolveAssetUrl(storagePath: string): Promise<string> {
 
 export async function deleteAttachmentFile(storagePath: string): Promise<void> {
   if (blobUrlCache.has(storagePath)) {
-    URL.revokeObjectURL(blobUrlCache.get(storagePath)!);
     blobUrlCache.delete(storagePath);
+  }
+
+  try {
+    const store = JSON.parse(localStorage.getItem('pscvault_attachment_blobs') || '{}');
+    delete store[storagePath];
+    localStorage.setItem('pscvault_attachment_blobs', JSON.stringify(store));
+  } catch (e) {
+    console.warn('Failed deleting attachment from localStorage:', e);
   }
 
   if (isTauriEnv) {

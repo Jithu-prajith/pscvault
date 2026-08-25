@@ -30,25 +30,25 @@ export const FileDropHandler = Extension.create({
                   case 'image':
                     editor.chain().focus().insertContent({
                       type: 'imageBlock',
-                      attrs: { src: saved.assetUrl, alt: file.name },
+                      attrs: { src: saved.assetUrl, storagePath: saved.storagePath, alt: file.name },
                     }).run();
                     break;
                   case 'pdf':
                     editor.chain().focus().insertContent({
                       type: 'pdfBlock',
-                      attrs: { src: saved.assetUrl, fileName: file.name, fileSize: data.byteLength },
+                      attrs: { src: saved.assetUrl, storagePath: saved.storagePath, fileName: file.name, fileSize: data.byteLength },
                     }).run();
                     break;
                   case 'audio':
                     editor.chain().focus().insertContent({
                       type: 'audioBlock',
-                      attrs: { src: saved.assetUrl, fileName: file.name, fileSize: data.byteLength },
+                      attrs: { src: saved.assetUrl, storagePath: saved.storagePath, fileName: file.name, fileSize: data.byteLength },
                     }).run();
                     break;
                   default:
                     editor.chain().focus().insertContent({
                       type: 'fileBlock',
-                      attrs: { src: saved.assetUrl, fileName: file.name, fileSize: data.byteLength, mimeType: file.type, mediaType },
+                      attrs: { src: saved.assetUrl, storagePath: saved.storagePath, fileName: file.name, fileSize: data.byteLength, mimeType: file.type, mediaType },
                     }).run();
                 }
               });

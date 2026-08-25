@@ -11,6 +11,7 @@ export const PdfBlock = Node.create({
   addAttributes() {
     return {
       attachmentId: { default: null },
+      storagePath:  { default: null },
       src:          { default: null },
       fileName:     { default: 'Document.pdf' },
       fileSize:     { default: 0 },
