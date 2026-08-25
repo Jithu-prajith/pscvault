@@ -28,6 +28,7 @@ import './styles/editor.css';
 
 const AppContent: React.FC = () => {
   const user = useAuthStore((s) => s.user);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const currentWorkspace = useAuthStore((s) => s.currentWorkspace);
   const setCurrentWorkspace = useAuthStore((s) => s.setCurrentWorkspace);
 
@@ -51,16 +52,24 @@ const AppContent: React.FC = () => {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [initLoading, setInitLoading] = useState(true);
 
-  // Startup initialization
+  // App & User Notes Sync Initialization
   const initApp = async () => {
+    if (!isAuthenticated || !user?.id) {
+      setInitLoading(false);
+      setShowOnboarding(false);
+      return;
+    }
+
+    setInitLoading(true);
     try {
-      const userId = user?.id || 'usr_default';
+      const userId = user.id;
       const wsList = await workspaceRepo.getAll(userId);
       setWorkspaces(wsList);
 
       if (wsList.length === 0) {
         setShowOnboarding(true);
       } else {
+        setShowOnboarding(false);
         const ws = wsList[0];
         setCurrentWorkspace(ws);
         setActiveWorkspaceId(ws.id);
@@ -89,7 +98,7 @@ const AppContent: React.FC = () => {
         }
       }
     } catch (e) {
-      console.warn('App initialization warning:', e);
+      console.warn('User workspace load warning:', e);
       setShowOnboarding(true);
     } finally {
       setInitLoading(false);
@@ -98,7 +107,7 @@ const AppContent: React.FC = () => {
 
   useEffect(() => {
     initApp();
-  }, []);
+  }, [user?.id, isAuthenticated]);
 
   // Global Keyboard Shortcuts
   useEffect(() => {
@@ -125,7 +134,7 @@ const AppContent: React.FC = () => {
         <div className="w-12 h-12 rounded-2xl bg-brand-600 animate-pulse flex items-center justify-center text-xl font-bold mb-3">
           PV
         </div>
-        <p className="text-xs text-slate-400">Loading PSCVault Local Storage Engine...</p>
+        <p className="text-xs text-slate-400">Loading PSCVault Account Notes & Sync...</p>
       </div>
     );
   }
@@ -133,8 +142,8 @@ const AppContent: React.FC = () => {
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-900 font-sans">
       
-      {/* Onboarding Wizard for new users */}
-      {showOnboarding && <OnboardingWizard onComplete={() => setShowOnboarding(false)} />}
+      {/* Onboarding Wizard for new accounts */}
+      {showOnboarding && <OnboardingWizard onComplete={() => { setShowOnboarding(false); initApp(); }} />}
 
       {/* Main Top Header */}
       <TopBar />
