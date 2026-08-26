@@ -10,19 +10,20 @@ export const ImageBlock = Node.create({
 
   addAttributes() {
     return {
-      attachmentId: { default: null },
-      storagePath:  { default: null },
-      src:          { default: null },
-      alt:          { default: '' },
-      title:        { default: '' },
-      width:        { default: 500 },
-      height:       { default: null },
-      rotation:     { default: 0 },
-      alignment:    { default: 'center' },
-      zIndex:       { default: 1 },
-      locked:       { default: false },
-      crop:         { default: null },
-      annotations:  { default: [] },
+      attachmentId:      { default: null },
+      storagePath:       { default: null },
+      src:               { default: null },
+      alt:               { default: '' },
+      title:             { default: '' },
+      width:             { default: 500 },
+      height:            { default: null },
+      rotation:          { default: 0 },
+      alignment:         { default: 'center' },
+      zIndex:            { default: 1 },
+      locked:            { default: false },
+      aspectRatioLocked: { default: false },
+      crop:              { default: null },
+      annotations:       { default: [] },
     };
   },
 

@@ -23,10 +23,11 @@ import { EditorToolbar } from '../editor/EditorToolbar';
 import { InsertMenuModal } from '../editor/InsertMenuModal';
 import { Breadcrumbs } from '../../components/layout/Breadcrumbs';
 import { DrawingCanvas } from '../drawing/DrawingCanvas';
+import { ChapterContainerView } from './ChapterContainerView';
 
 import { usePageStore } from '../../stores/pageStore';
 import { usePageRepo, useAttachmentRepo, useTagRepo } from '../../infrastructure/RepositoryProvider';
-import { Plus, Tag as TagIcon, BookOpen, Edit3 } from 'lucide-react';
+import { BookOpen, Edit3 } from 'lucide-react';
 import { NOTEBOOK_ICONS } from '../../lib/constants';
 import { formatISTDateTime } from '../../lib/utils';
 import { DrawingStroke } from '../../domain/types';
@@ -119,9 +120,15 @@ export const PageView: React.FC = () => {
           <BookOpen className="w-8 h-8" />
         </div>
         <p className="text-sm font-medium text-slate-600 dark:text-slate-300">No page selected</p>
-        <p className="text-xs text-slate-400 mt-1">Select a section and page from the sidebar to start taking UPSC notes.</p>
+        <p className="text-xs text-slate-400 mt-1">Select a section, chapter, or topic from the sidebar to start studying.</p>
       </div>
     );
+  }
+
+  // REQUIREMENT 2 — CHAPTER SHOULD BE A CONTAINER
+  // Render Chapter Container Dashboard when active page is of type 'chapter'
+  if (currentPage.type === 'chapter') {
+    return <ChapterContainerView chapter={currentPage} />;
   }
 
   const handleTitleBlur = async () => {
@@ -193,7 +200,7 @@ export const PageView: React.FC = () => {
                 className="text-3xl p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors shrink-0"
                 title="Change Page Icon"
               >
-                {currentPage.icon || (currentPage.type === 'chapter' ? '📁' : '📄')}
+                {currentPage.icon || '📄'}
               </button>
 
               {/* Icon Picker Popover */}

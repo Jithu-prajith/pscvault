@@ -2,15 +2,18 @@ import React, { useState, useRef, useEffect } from 'react';
 import { NodeViewWrapper, NodeViewProps } from '@tiptap/react';
 import {
   RotateCw, Maximize2, Trash2, AlignLeft, AlignCenter, AlignRight,
-  Highlighter, Edit3, Crop, Lock, Unlock, ArrowUp, ArrowDown, Copy,
-  Scaling, Check
+  Highlighter, Edit3, Lock, Unlock, ArrowUp, ArrowDown, Move
 } from 'lucide-react';
 import { useUIStore } from '../../../stores/uiStore';
 import { DrawingStroke, StrokePoint } from '../../../domain/types';
 import { resolveAssetUrl } from '../../../infrastructure/fs/fileService';
 
 export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes, deleteNode, selected }) => {
-  const { src, storagePath, alt, title, width, rotation, alignment, zIndex, locked, annotations } = node.attrs;
+  const {
+    src, storagePath, alt, title, width, height, rotation, alignment,
+    zIndex, locked, aspectRatioLocked, annotations
+  } = node.attrs;
+
   const openFullscreen = useUIStore((s) => s.openFullscreenViewer);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -20,7 +23,7 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
   // Resolved Src state to prevent disappearing images after refresh
   const [resolvedSrc, setResolvedSrc] = useState<string>(src || '');
 
-  // Mode states
+  // Mode & Drawing states
   const [annotating, setAnnotating] = useState(false);
   const [tool, setTool] = useState<'highlighter' | 'pen' | 'eraser'>('highlighter');
   const [strokeColor, setStrokeColor] = useState('#fde047');
@@ -30,15 +33,41 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
   const [isDrawing, setIsDrawing] = useState(false);
   const [activePoints, setActivePoints] = useState<StrokePoint[]>([]);
 
+  // Dimension & Transform States
   const [currentRotation, setCurrentRotation] = useState<number>(rotation || 0);
   const [currentWidth, setCurrentWidth] = useState<number | string>(width || 500);
+  const [currentHeight, setCurrentHeight] = useState<number | string | null>(height || null);
+  const [isAspectLocked, setIsAspectLocked] = useState<boolean>(!!aspectRatioLocked);
+  const [currentZIndex, setCurrentZIndex] = useState<number>(zIndex || 1);
 
-  // Real-time Sideways Drag Resizing state
-  const [isResizing, setIsResizing] = useState(false);
+  // Drag Resizing State Ref
   const isResizingRef = useRef(false);
+  const resizeHandleRef = useRef<'tl' | 'tc' | 'tr' | 'ml' | 'mr' | 'bl' | 'bc' | 'br' | null>(null);
   const startXRef = useRef(0);
+  const startYRef = useRef(0);
   const startWidthRef = useRef(500);
-  const resizeDirRef = useRef<'right' | 'left'>('right');
+  const startHeightRef = useRef(350);
+  const aspectRatioRef = useRef(1.33);
+
+  // Drag Rotation State Ref
+  const isRotatingRef = useRef(false);
+
+  // Keyboard Delete Listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selected) return;
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Only delete node if not actively typing in an input
+        const activeTag = (document.activeElement?.tagName || '').toLowerCase();
+        if (activeTag !== 'input' && activeTag !== 'textarea') {
+          e.preventDefault();
+          deleteNode();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selected, deleteNode]);
 
   // Load persistent asset URL on mount/update
   useEffect(() => {
@@ -74,12 +103,13 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
     if (!ctx) return;
 
     const numWidth = typeof currentWidth === 'number' ? currentWidth : img.clientWidth || 500;
+    const numHeight = typeof currentHeight === 'number' ? currentHeight : img.clientHeight || 350;
+
     canvas.width = img.clientWidth || numWidth;
-    canvas.height = img.clientHeight || 350;
+    canvas.height = img.clientHeight || numHeight;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw saved strokes
     currentStrokes.forEach((stroke) => {
       if (stroke.points.length < 2) return;
       ctx.beginPath();
@@ -96,7 +126,6 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
       ctx.stroke();
     });
 
-    // Draw active drawing stroke
     if (activePoints.length > 1) {
       ctx.beginPath();
       ctx.strokeStyle = tool === 'eraser' ? '#ffffff' : strokeColor;
@@ -111,9 +140,9 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
       }
       ctx.stroke();
     }
-  }, [currentStrokes, activePoints, currentWidth, annotating, tool, strokeColor, strokeWidth]);
+  }, [currentStrokes, activePoints, currentWidth, currentHeight, annotating, tool, strokeColor, strokeWidth]);
 
-  // Pointer event handlers for drawing (Mouse / Touch / Pen Stylus)
+  // Pointer event handlers for drawing
   const handlePointerDown = (e: React.PointerEvent) => {
     if (!annotating) return;
     setIsDrawing(true);
@@ -163,15 +192,56 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
     setActivePoints([]);
   };
 
-  // Rotation Handle
-  const handleRotateClick = () => {
+  // ----------------------------------------------------
+  // ROTATION HANDLE DRAGGING
+  // ----------------------------------------------------
+  const startRotateDrag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+    isRotatingRef.current = true;
+  };
+
+  const handleRotateMove = (e: React.PointerEvent) => {
+    if (!isRotatingRef.current || !containerRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    const radians = Math.atan2(e.clientX - centerX, -(e.clientY - centerY));
+    let deg = Math.round(radians * (180 / Math.PI));
+    if (deg < 0) deg += 360;
+
+    setCurrentRotation(deg);
+  };
+
+  const stopRotateDrag = (e: React.PointerEvent) => {
+    if (!isRotatingRef.current) return;
+    isRotatingRef.current = false;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+    updateAttributes({ rotation: currentRotation });
+  };
+
+  const handleQuickRotateClick = () => {
     const nextRot = (currentRotation + 45) % 360;
     setCurrentRotation(nextRot);
     updateAttributes({ rotation: nextRot });
   };
 
-  // --- REAL-TIME SIDEWAYS DRAG RESIZING HANDLERS ---
-  const startSideResize = (e: React.PointerEvent, dir: 'right' | 'left') => {
+  // ----------------------------------------------------
+  // POWERPOINT 8-HANDLE RESIZING LOGIC
+  // ----------------------------------------------------
+  const start8HandleResize = (
+    e: React.PointerEvent,
+    handle: 'tl' | 'tc' | 'tr' | 'ml' | 'mr' | 'bl' | 'bc' | 'br'
+  ) => {
     e.preventDefault();
     e.stopPropagation();
     try {
@@ -179,48 +249,103 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
     } catch {}
 
     isResizingRef.current = true;
-    setIsResizing(true);
+    resizeHandleRef.current = handle;
     startXRef.current = e.clientX;
-    const currentPx = imgRef.current?.clientWidth || (typeof currentWidth === 'number' ? currentWidth : 500);
-    startWidthRef.current = currentPx;
-    resizeDirRef.current = dir;
+    startYRef.current = e.clientY;
+
+    const currentW = imgRef.current?.clientWidth || (typeof currentWidth === 'number' ? currentWidth : 500);
+    const currentH = imgRef.current?.clientHeight || (typeof currentHeight === 'number' ? currentHeight : 350);
+
+    startWidthRef.current = currentW;
+    startHeightRef.current = currentH;
+    aspectRatioRef.current = currentW / (currentH || 1);
   };
 
-  const handleSideResizeMove = (e: React.PointerEvent) => {
-    if (!isResizingRef.current) return;
+  const handle8HandleResizeMove = (e: React.PointerEvent) => {
+    if (!isResizingRef.current || !resizeHandleRef.current) return;
     e.preventDefault();
     e.stopPropagation();
 
     const deltaX = e.clientX - startXRef.current;
-    let newPx = startWidthRef.current;
+    const deltaY = e.clientY - startYRef.current;
+    const handle = resizeHandleRef.current;
+    const shiftKey = e.shiftKey;
 
-    if (resizeDirRef.current === 'right') {
-      newPx = startWidthRef.current + deltaX;
-    } else {
-      newPx = startWidthRef.current - deltaX;
+    let newW = startWidthRef.current;
+    let newH = startHeightRef.current;
+
+    // 1. INDEPENDENT SIDE RESIZING (Middle-Left & Middle-Right) -> ONLY WIDTH
+    if (handle === 'mr') {
+      newW = startWidthRef.current + deltaX;
+      if (isAspectLocked && !shiftKey) {
+        newH = Math.round(newW / aspectRatioRef.current);
+      }
+    } else if (handle === 'ml') {
+      newW = startWidthRef.current - deltaX;
+      if (isAspectLocked && !shiftKey) {
+        newH = Math.round(newW / aspectRatioRef.current);
+      }
     }
 
-    const clamped = Math.max(180, Math.min(1600, Math.round(newPx)));
-    setCurrentWidth(clamped);
+    // 2. INDEPENDENT VERTICAL RESIZING (Top-Center & Bottom-Center) -> ONLY HEIGHT
+    else if (handle === 'bc') {
+      newH = startHeightRef.current + deltaY;
+      if (isAspectLocked && !shiftKey) {
+        newW = Math.round(newH * aspectRatioRef.current);
+      }
+    } else if (handle === 'tc') {
+      newH = startHeightRef.current - deltaY;
+      if (isAspectLocked && !shiftKey) {
+        newW = Math.round(newH * aspectRatioRef.current);
+      }
+    }
+
+    // 3. CORNER RESIZING (Proportional by default unless Shift / Unlocked)
+    else if (handle === 'br') {
+      newW = startWidthRef.current + deltaX;
+      newH = isAspectLocked || !shiftKey ? Math.round(newW / aspectRatioRef.current) : startHeightRef.current + deltaY;
+    } else if (handle === 'bl') {
+      newW = startWidthRef.current - deltaX;
+      newH = isAspectLocked || !shiftKey ? Math.round(newW / aspectRatioRef.current) : startHeightRef.current + deltaY;
+    } else if (handle === 'tr') {
+      newW = startWidthRef.current + deltaX;
+      newH = isAspectLocked || !shiftKey ? Math.round(newW / aspectRatioRef.current) : startHeightRef.current - deltaY;
+    } else if (handle === 'tl') {
+      newW = startWidthRef.current - deltaX;
+      newH = isAspectLocked || !shiftKey ? Math.round(newW / aspectRatioRef.current) : startHeightRef.current - deltaY;
+    }
+
+    const clampedW = Math.max(100, Math.min(1800, Math.round(newW)));
+    const clampedH = Math.max(80, Math.min(1600, Math.round(newH)));
+
+    setCurrentWidth(clampedW);
+    setCurrentHeight(clampedH);
   };
 
-  const stopSideResize = (e: React.PointerEvent) => {
+  const stop8HandleResize = (e: React.PointerEvent) => {
     if (!isResizingRef.current) return;
     isResizingRef.current = false;
-    setIsResizing(false);
+    resizeHandleRef.current = null;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {}
 
-    if (typeof currentWidth === 'number') {
-      updateAttributes({ width: currentWidth });
-    }
+    updateAttributes({
+      width: currentWidth,
+      height: currentHeight,
+    });
   };
 
-  // Quick Preset Width Helper
-  const setPresetWidth = (preset: number | string) => {
-    setCurrentWidth(preset);
-    updateAttributes({ width: preset });
+  const toggleAspectLock = () => {
+    const nextState = !isAspectLocked;
+    setIsAspectLocked(nextState);
+    updateAttributes({ aspectRatioLocked: nextState });
+  };
+
+  const adjustZIndex = (delta: number) => {
+    const nextZ = Math.max(1, currentZIndex + delta);
+    setCurrentZIndex(nextZ);
+    updateAttributes({ zIndex: nextZ });
   };
 
   const alignClasses = {
@@ -230,6 +355,7 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
   }[alignment as 'left' | 'center' | 'right'] || 'mx-auto text-center';
 
   const widthStyle = typeof currentWidth === 'number' ? `${currentWidth}px` : currentWidth;
+  const heightStyle = currentHeight ? (typeof currentHeight === 'number' ? `${currentHeight}px` : currentHeight) : 'auto';
 
   return (
     <NodeViewWrapper className={`my-6 select-none group relative inline-block w-full ${alignClasses}`}>
@@ -237,62 +363,75 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
         ref={containerRef}
         style={{
           width: widthStyle,
+          height: heightStyle,
           transform: `rotate(${currentRotation}deg)`,
-          zIndex: zIndex || 1,
+          zIndex: currentZIndex,
         }}
-        className={`relative inline-block max-w-full rounded-2xl overflow-visible border transition-all ${
-          selected ? 'border-brand-500 ring-2 ring-brand-500/40 shadow-xl' : 'border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md'
+        className={`relative inline-block max-w-full rounded-xl overflow-visible transition-all ${
+          selected
+            ? 'ring-2 ring-brand-500 border-2 border-brand-500 shadow-2xl'
+            : 'border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md'
         }`}
       >
 
-        {/* Rotation Handle Top Icon */}
+        {/* --- ROTATION HANDLE ABOVE TOP-CENTER --- */}
         {selected && !locked && (
-          <button
-            onClick={handleRotateClick}
-            className="absolute -top-10 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-brand-600 text-white flex items-center justify-center shadow-lg hover:bg-brand-500 transition-transform active:scale-95 z-30"
-            title="Rotate Image 45°"
-          >
-            <RotateCw className="w-4 h-4" />
-          </button>
-        )}
-
-        {/* Live Resize Badge */}
-        {isResizing && (
-          <div className="absolute -top-8 left-2 bg-brand-600 text-white font-mono text-[11px] px-2 py-0.5 rounded-md shadow-md z-40">
-            {typeof currentWidth === 'number' ? `${currentWidth}px Sideways` : currentWidth}
+          <div className="absolute -top-9 left-1/2 -translate-x-1/2 flex flex-col items-center z-30 touch-none select-none">
+            <button
+              onPointerDown={startRotateDrag}
+              onPointerMove={handleRotateMove}
+              onPointerUp={stopRotateDrag}
+              className="w-7 h-7 rounded-full bg-brand-600 border-2 border-white text-white flex items-center justify-center shadow-lg hover:bg-brand-500 hover:scale-110 active:scale-95 cursor-grab active:cursor-grabbing transition-transform"
+              title="Drag to Rotate Image Freely"
+            >
+              <RotateCw className="w-3.5 h-3.5" />
+            </button>
+            <div className="w-0.5 h-2.5 bg-brand-500" />
           </div>
         )}
 
-        {/* Toolbar Header (Selection / Annotation / Resizing Controls) */}
-        <div className="absolute top-2 right-2 flex items-center gap-1 bg-slate-900/90 backdrop-blur-md text-white px-2.5 py-1.5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity z-30 text-xs shadow-lg">
-          {/* Sideways Preset Width Controls */}
+        {/* Toolbar Header Overlay */}
+        <div className="absolute top-2 right-2 flex items-center gap-1 bg-slate-900/95 backdrop-blur-md text-white px-2.5 py-1.5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity z-30 text-xs shadow-xl">
+          
+          {/* Aspect Ratio Lock Toggle */}
           <button
-            onClick={() => setPresetWidth(300)}
-            className={`px-1.5 py-0.5 hover:bg-slate-800 rounded font-mono text-[10px] ${currentWidth === 300 ? 'text-brand-400 font-bold' : 'text-slate-300'}`}
-            title="Enlarge 300px"
+            onClick={toggleAspectLock}
+            className={`p-1 rounded-lg flex items-center gap-1 transition-colors ${
+              isAspectLocked ? 'bg-brand-600 text-white font-bold' : 'hover:bg-slate-800 text-slate-300'
+            }`}
+            title={isAspectLocked ? 'Aspect Ratio Locked (Click to Unlock for Freeform Distortion)' : 'Aspect Ratio Unlocked'}
           >
-            Small
+            {isAspectLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+            <span className="text-[10px] hidden sm:inline">{isAspectLocked ? 'Locked' : 'Freeform'}</span>
+          </button>
+
+          <span className="w-px h-3 bg-slate-700 mx-0.5" />
+
+          {/* Quick Rotate button */}
+          <button
+            onClick={handleQuickRotateClick}
+            className="p-1 hover:bg-slate-800 rounded-lg text-slate-300"
+            title="Rotate 45°"
+          >
+            <RotateCw className="w-3.5 h-3.5" />
+          </button>
+
+          <span className="w-px h-3 bg-slate-700 mx-0.5" />
+
+          {/* Z-Index Layering */}
+          <button
+            onClick={() => adjustZIndex(1)}
+            className="p-1 hover:bg-slate-800 rounded-lg text-slate-300"
+            title="Bring Forward (Z-Index)"
+          >
+            <ArrowUp className="w-3.5 h-3.5" />
           </button>
           <button
-            onClick={() => setPresetWidth(600)}
-            className={`px-1.5 py-0.5 hover:bg-slate-800 rounded font-mono text-[10px] ${currentWidth === 600 ? 'text-brand-400 font-bold' : 'text-slate-300'}`}
-            title="Enlarge 600px"
+            onClick={() => adjustZIndex(-1)}
+            className="p-1 hover:bg-slate-800 rounded-lg text-slate-300"
+            title="Send Backward (Z-Index)"
           >
-            Medium
-          </button>
-          <button
-            onClick={() => setPresetWidth(900)}
-            className={`px-1.5 py-0.5 hover:bg-slate-800 rounded font-mono text-[10px] ${currentWidth === 900 ? 'text-brand-400 font-bold' : 'text-slate-300'}`}
-            title="Enlarge 900px Sideways"
-          >
-            Large
-          </button>
-          <button
-            onClick={() => setPresetWidth('100%')}
-            className={`px-1.5 py-0.5 hover:bg-slate-800 rounded font-mono text-[10px] ${currentWidth === '100%' ? 'text-brand-400 font-bold' : 'text-slate-300'}`}
-            title="Full Width Sideways (100%)"
-          >
-            100%
+            <ArrowDown className="w-3.5 h-3.5" />
           </button>
 
           <span className="w-px h-3 bg-slate-700 mx-0.5" />
@@ -322,23 +461,16 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
 
           <span className="w-px h-3 bg-slate-700 mx-0.5" />
 
-          {/* Toggle Image Annotation / Highlighter Mode */}
+          {/* Highlight / Annotate Mode */}
           <button
-            onClick={() => {
-              setAnnotating(!annotating);
-              if (!annotating) {
-                setTool('highlighter');
-                setStrokeColor('#fde047');
-                setStrokeWidth(16);
-              }
-            }}
+            onClick={() => setAnnotating(!annotating)}
             className={`flex items-center gap-1 px-2 py-1 rounded-lg font-medium transition-colors ${
               annotating ? 'bg-amber-500 text-slate-950 font-bold' : 'hover:bg-slate-800 text-slate-200'
             }`}
-            title="Highlight / Annotate Image"
+            title="Highlight / Draw on Image"
           >
             <Highlighter className="w-3.5 h-3.5" />
-            <span>{annotating ? 'Done' : 'Highlight'}</span>
+            <span className="text-[11px]">{annotating ? 'Done' : 'Highlight'}</span>
           </button>
 
           <span className="w-px h-3 bg-slate-700 mx-0.5" />
@@ -346,75 +478,34 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
           {/* Fullscreen & Delete */}
           <button
             onClick={() => openFullscreen('image', resolvedSrc || src, title || alt || 'Image Preview')}
-            className="p-1 hover:bg-slate-800 rounded-lg"
-            title="Full Screen Viewer"
+            className="p-1 hover:bg-slate-800 rounded-lg text-slate-300"
+            title="Full Screen View"
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={deleteNode}
             className="p-1 hover:bg-red-600 rounded-lg text-red-400 hover:text-white"
-            title="Delete Image"
+            title="Delete Image (Or press Delete key)"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        {/* Annotation Palette Toolbar (when Annotation Mode is active) */}
-        {annotating && (
-          <div className="absolute top-12 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-slate-900/95 backdrop-blur-md text-white p-2 rounded-2xl border border-slate-700 shadow-2xl z-40 text-xs">
-            <button
-              onClick={() => { setTool('highlighter'); setStrokeWidth(16); setStrokeColor('#fde047'); }}
-              className={`p-1.5 rounded-lg flex items-center gap-1 font-semibold ${tool === 'highlighter' ? 'bg-amber-400 text-slate-950' : 'hover:bg-slate-800'}`}
-            >
-              <Highlighter className="w-3.5 h-3.5" />
-              <span>Highlighter</span>
-            </button>
-
-            <button
-              onClick={() => { setTool('pen'); setStrokeWidth(4); setStrokeColor('#ef4444'); }}
-              className={`p-1.5 rounded-lg flex items-center gap-1 font-semibold ${tool === 'pen' ? 'bg-brand-500 text-white' : 'hover:bg-slate-800'}`}
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>Pen</span>
-            </button>
-
-            {/* Color Swatches */}
-            <div className="flex items-center gap-1.5 ml-1">
-              {['#fde047', '#86efac', '#93c5fd', '#f472b6', '#ef4444', '#000000'].map((c) => (
-                <button
-                  key={c}
-                  onClick={() => setStrokeColor(c)}
-                  className={`w-5 h-5 rounded-full border border-white/20 transition-transform ${strokeColor === c ? 'scale-125 ring-2 ring-white' : 'hover:scale-110'}`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
-
-            <span className="w-px h-4 bg-slate-700 mx-1" />
-
-            <button
-              onClick={() => {
-                setCurrentStrokes([]);
-                updateAttributes({ annotations: [] });
-              }}
-              className="p-1 text-slate-400 hover:text-red-400"
-              title="Clear Highlights"
-            >
-              Clear
-            </button>
-          </div>
-        )}
-
-        {/* Main Image Container */}
-        <div className="relative rounded-2xl overflow-hidden bg-slate-100 dark:bg-slate-900">
+        {/* Main Rendered Image Element with Explicit Width & Height */}
+        <div className="relative w-full h-full rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-900">
           <img
             ref={imgRef}
             src={resolvedSrc || src}
             alt={alt || ''}
             title={title || ''}
-            style={{ width: widthStyle, height: 'auto', display: 'block' }}
-            className="rounded-2xl object-contain transition-all"
+            style={{
+              width: widthStyle,
+              height: heightStyle,
+              objectFit: isAspectLocked ? 'contain' : 'fill',
+              display: 'block',
+            }}
+            className="rounded-xl transition-all"
             onError={async () => {
               if (storagePath) {
                 const url = await resolveAssetUrl(storagePath);
@@ -423,7 +514,7 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
             }}
           />
 
-          {/* Scalable Canvas Overlay for Highlights & Pen Annotations */}
+          {/* Canvas Overlay for Annotations */}
           <canvas
             ref={canvasRef}
             onPointerDown={handlePointerDown}
@@ -433,61 +524,91 @@ export const ImageBlockView: React.FC<NodeViewProps> = ({ node, updateAttributes
           />
         </div>
 
-        {/* --- REAL-TIME SIDEWAYS DRAG RESIZE HANDLES --- */}
+        {/* --- POWERPOINT-STYLE 8 RESIZE HANDLES --- */}
         {selected && !locked && (
           <>
-            {/* Right Edge Sideways Drag Handle */}
+            {/* 1. Top-Left Handle */}
             <div
-              onPointerDown={(e) => startSideResize(e, 'right')}
-              onPointerMove={handleSideResizeMove}
-              onPointerUp={stopSideResize}
-              className="absolute top-1/2 -right-3 -translate-y-1/2 w-6 h-12 flex items-center justify-center cursor-ew-resize group/handle z-30 touch-none"
-              title="Drag Sideways to Enlarge Image Width"
-            >
-              <div className="w-3 h-8 rounded-full bg-brand-600 border-2 border-white shadow-lg flex flex-col items-center justify-center gap-0.5 group-hover/handle:scale-125 transition-transform">
-                <span className="w-1 h-1 rounded-full bg-white" />
-                <span className="w-1 h-1 rounded-full bg-white" />
-              </div>
-            </div>
-
-            {/* Left Edge Sideways Drag Handle */}
-            <div
-              onPointerDown={(e) => startSideResize(e, 'left')}
-              onPointerMove={handleSideResizeMove}
-              onPointerUp={stopSideResize}
-              className="absolute top-1/2 -left-3 -translate-y-1/2 w-6 h-12 flex items-center justify-center cursor-ew-resize group/handle z-30 touch-none"
-              title="Drag Sideways to Enlarge Image Width"
-            >
-              <div className="w-3 h-8 rounded-full bg-brand-600 border-2 border-white shadow-lg flex flex-col items-center justify-center gap-0.5 group-hover/handle:scale-125 transition-transform">
-                <span className="w-1 h-1 rounded-full bg-white" />
-                <span className="w-1 h-1 rounded-full bg-white" />
-              </div>
-            </div>
-
-            {/* Corner Handles */}
-            <div
-              onPointerDown={(e) => startSideResize(e, 'right')}
-              onPointerMove={handleSideResizeMove}
-              onPointerUp={stopSideResize}
-              className="absolute -bottom-2 -right-2 w-5 h-5 rounded-full bg-brand-600 border-2 border-white shadow-lg cursor-nwse-resize hover:scale-125 transition-transform z-30 touch-none"
-              title="Drag Corner to Enlarge Image"
+              onPointerDown={(e) => start8HandleResize(e, 'tl')}
+              onPointerMove={handle8HandleResizeMove}
+              onPointerUp={stop8HandleResize}
+              className="absolute -top-2 -left-2 w-4 h-4 rounded-sm bg-brand-600 border-2 border-white shadow-md cursor-nwse-resize hover:scale-125 transition-transform z-30 touch-none"
+              title="Drag Corner to Resize"
             />
+
+            {/* 2. Top-Center Handle (HEIGHT ONLY) */}
             <div
-              onPointerDown={(e) => startSideResize(e, 'left')}
-              onPointerMove={handleSideResizeMove}
-              onPointerUp={stopSideResize}
-              className="absolute -bottom-2 -left-2 w-5 h-5 rounded-full bg-brand-600 border-2 border-white shadow-lg cursor-nesw-resize hover:scale-125 transition-transform z-30 touch-none"
-              title="Drag Corner to Enlarge Image"
+              onPointerDown={(e) => start8HandleResize(e, 'tc')}
+              onPointerMove={handle8HandleResizeMove}
+              onPointerUp={stop8HandleResize}
+              className="absolute -top-2 left-1/2 -translate-x-1/2 w-6 h-3.5 rounded-sm bg-brand-600 border-2 border-white shadow-md cursor-ns-resize hover:scale-125 transition-transform z-30 touch-none flex items-center justify-center"
+              title="Drag Top/Bottom Edge to Change Height Only"
+            >
+              <div className="w-2.5 h-0.5 bg-white rounded-full" />
+            </div>
+
+            {/* 3. Top-Right Handle */}
+            <div
+              onPointerDown={(e) => start8HandleResize(e, 'tr')}
+              onPointerMove={handle8HandleResizeMove}
+              onPointerUp={stop8HandleResize}
+              className="absolute -top-2 -right-2 w-4 h-4 rounded-sm bg-brand-600 border-2 border-white shadow-md cursor-nesw-resize hover:scale-125 transition-transform z-30 touch-none"
+              title="Drag Corner to Resize"
+            />
+
+            {/* 4. Middle-Left Handle (WIDTH ONLY) */}
+            <div
+              onPointerDown={(e) => start8HandleResize(e, 'ml')}
+              onPointerMove={handle8HandleResizeMove}
+              onPointerUp={stop8HandleResize}
+              className="absolute top-1/2 -left-2 -translate-y-1/2 w-3.5 h-6 rounded-sm bg-brand-600 border-2 border-white shadow-md cursor-ew-resize hover:scale-125 transition-transform z-30 touch-none flex items-center justify-center"
+              title="Drag Left/Right Edge to Change Width Only"
+            >
+              <div className="w-0.5 h-2.5 bg-white rounded-full" />
+            </div>
+
+            {/* 5. Middle-Right Handle (WIDTH ONLY) */}
+            <div
+              onPointerDown={(e) => start8HandleResize(e, 'mr')}
+              onPointerMove={handle8HandleResizeMove}
+              onPointerUp={stop8HandleResize}
+              className="absolute top-1/2 -right-2 -translate-y-1/2 w-3.5 h-6 rounded-sm bg-brand-600 border-2 border-white shadow-md cursor-ew-resize hover:scale-125 transition-transform z-30 touch-none flex items-center justify-center"
+              title="Drag Left/Right Edge to Change Width Only"
+            >
+              <div className="w-0.5 h-2.5 bg-white rounded-full" />
+            </div>
+
+            {/* 6. Bottom-Left Handle */}
+            <div
+              onPointerDown={(e) => start8HandleResize(e, 'bl')}
+              onPointerMove={handle8HandleResizeMove}
+              onPointerUp={stop8HandleResize}
+              className="absolute -bottom-2 -left-2 w-4 h-4 rounded-sm bg-brand-600 border-2 border-white shadow-md cursor-nesw-resize hover:scale-125 transition-transform z-30 touch-none"
+              title="Drag Corner to Resize"
+            />
+
+            {/* 7. Bottom-Center Handle (HEIGHT ONLY) */}
+            <div
+              onPointerDown={(e) => start8HandleResize(e, 'bc')}
+              onPointerMove={handle8HandleResizeMove}
+              onPointerUp={stop8HandleResize}
+              className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-6 h-3.5 rounded-sm bg-brand-600 border-2 border-white shadow-md cursor-ns-resize hover:scale-125 transition-transform z-30 touch-none flex items-center justify-center"
+              title="Drag Top/Bottom Edge to Change Height Only"
+            >
+              <div className="w-2.5 h-0.5 bg-white rounded-full" />
+            </div>
+
+            {/* 8. Bottom-Right Handle */}
+            <div
+              onPointerDown={(e) => start8HandleResize(e, 'br')}
+              onPointerMove={handle8HandleResizeMove}
+              onPointerUp={stop8HandleResize}
+              className="absolute -bottom-2 -right-2 w-4 h-4 rounded-sm bg-brand-600 border-2 border-white shadow-md cursor-nwse-resize hover:scale-125 transition-transform z-30 touch-none"
+              title="Drag Corner to Resize"
             />
           </>
         )}
 
-        {/* Optional Caption */}
-        {alt && (
-          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 italic text-center px-2 py-0.5">
-            {alt}
-          </div>
-        )}
       </div>
     </NodeViewWrapper>
   );
