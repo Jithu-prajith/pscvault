@@ -4,6 +4,7 @@ import { eq, and, isNull, asc, desc, sql, isNotNull } from 'drizzle-orm';
 import { IPageRepository, CreatePageDTO, UpdatePageDTO } from '../../domain/repositories/IPageRepository';
 import { Page, PageSummary, PageEntityType } from '../../domain/types';
 import { generateUUIDv7, nowISO } from '../../lib/uuid';
+import { SyncEngine } from '../sync/SyncEngine';
 
 export class LocalPageRepository implements IPageRepository {
   async getBySection(sectionId: string): Promise<PageSummary[]> {
@@ -103,11 +104,23 @@ export class LocalPageRepository implements IPageRepository {
     };
 
     await db.insert(pages).values(newPage);
-    return {
+
+    const createdPage = {
       ...newPage,
       type: (newPage.type || 'page') as PageEntityType,
       content: defaultContent,
     };
+
+    // Background Sync Queue Enqueue
+    SyncEngine.enqueueOperation({
+      operation: 'CREATE',
+      entityType: 'PAGE',
+      entityId: id,
+      version: 1,
+      data: createdPage,
+    });
+
+    return createdPage;
   }
 
   async createChapter(sectionId: string, title?: string): Promise<Page> {
@@ -182,6 +195,17 @@ export class LocalPageRepository implements IPageRepository {
 
     await db.update(pages).set(updateData).where(eq(pages.id, id));
     const updated = await this.getById(id);
+
+    if (updated) {
+      SyncEngine.enqueueOperation({
+        operation: 'UPDATE',
+        entityType: 'PAGE',
+        entityId: id,
+        version: updated.version,
+        data: updated,
+      });
+    }
+
     return updated!;
   }
 
@@ -194,6 +218,15 @@ export class LocalPageRepository implements IPageRepository {
     }).where(eq(pages.id, id));
 
     const p = await this.getById(id);
+    if (p) {
+      SyncEngine.enqueueOperation({
+        operation: 'UPDATE',
+        entityType: 'PAGE',
+        entityId: id,
+        version: p.version,
+        data: p,
+      });
+    }
     return { version: p?.version || 1 };
   }
 
@@ -203,6 +236,12 @@ export class LocalPageRepository implements IPageRepository {
     await db.update(pages).set({ deletedAt: now }).where(eq(pages.id, id));
     // Cascade soft delete to all children/topics where parentId === id
     await db.update(pages).set({ deletedAt: now }).where(eq(pages.parentId, id));
+
+    SyncEngine.enqueueOperation({
+      operation: 'DELETE',
+      entityType: 'PAGE',
+      entityId: id,
+    });
   }
 
   async restore(id: string): Promise<void> {
@@ -210,20 +249,50 @@ export class LocalPageRepository implements IPageRepository {
     await db.update(pages).set({ deletedAt: null }).where(eq(pages.id, id));
     // Cascade restore to all child topics
     await db.update(pages).set({ deletedAt: null }).where(eq(pages.parentId, id));
+
+    SyncEngine.enqueueOperation({
+      operation: 'RESTORE',
+      entityType: 'PAGE',
+      entityId: id,
+    });
   }
 
   async permanentDelete(id: string): Promise<void> {
     // Delete target and child topics permanently
     await db.delete(pages).where(eq(pages.parentId, id));
     await db.delete(pages).where(eq(pages.id, id));
+
+    SyncEngine.enqueueOperation({
+      operation: 'DELETE',
+      entityType: 'PAGE',
+      entityId: id,
+    });
   }
 
   async reorder(id: string, newPosition: string): Promise<void> {
     await db.update(pages).set({ position: newPosition, updatedAt: nowISO() }).where(eq(pages.id, id));
+    const p = await this.getById(id);
+    if (p) {
+      SyncEngine.enqueueOperation({
+        operation: 'UPDATE',
+        entityType: 'PAGE',
+        entityId: id,
+        data: p,
+      });
+    }
   }
 
   async move(id: string, targetSectionId: string): Promise<void> {
     await db.update(pages).set({ sectionId: targetSectionId, updatedAt: nowISO() }).where(eq(pages.id, id));
+    const p = await this.getById(id);
+    if (p) {
+      SyncEngine.enqueueOperation({
+        operation: 'UPDATE',
+        entityType: 'PAGE',
+        entityId: id,
+        data: p,
+      });
+    }
   }
 
   async duplicate(id: string): Promise<Page> {
@@ -250,6 +319,14 @@ export class LocalPageRepository implements IPageRepository {
     if (!p) return false;
     const nextState = !p.isFavorite;
     await db.update(pages).set({ isFavorite: nextState, updatedAt: nowISO() }).where(eq(pages.id, id));
+    
+    SyncEngine.enqueueOperation({
+      operation: 'UPDATE',
+      entityType: 'PAGE',
+      entityId: id,
+      data: { ...p, isFavorite: nextState },
+    });
+
     return nextState;
   }
 

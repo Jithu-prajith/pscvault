@@ -5,6 +5,7 @@ import { IWorkspaceRepository, CreateWorkspaceDTO } from '../../domain/repositor
 import { Workspace } from '../../domain/types';
 import { generateUUIDv7, nowISO } from '../../lib/uuid';
 import { slugify } from '../../lib/utils';
+import { SyncEngine } from '../sync/SyncEngine';
 
 export class LocalWorkspaceRepository implements IWorkspaceRepository {
   async getAll(userId: string): Promise<Workspace[]> {
@@ -41,7 +42,17 @@ export class LocalWorkspaceRepository implements IWorkspaceRepository {
     };
 
     await db.insert(workspaces).values(newWs);
-    return { ...newWs, settings: {} };
+
+    const res = { ...newWs, settings: {} };
+    SyncEngine.enqueueOperation({
+      operation: 'CREATE',
+      entityType: 'WORKSPACE',
+      entityId: id,
+      version: 1,
+      data: res,
+    });
+
+    return res;
   }
 
   async update(id: string, data: Partial<Pick<Workspace, 'name' | 'icon' | 'settings'>>): Promise<Workspace> {
@@ -54,14 +65,35 @@ export class LocalWorkspaceRepository implements IWorkspaceRepository {
 
     await db.update(workspaces).set(updateData).where(eq(workspaces.id, id));
     const updated = await this.getById(id);
+
+    if (updated) {
+      SyncEngine.enqueueOperation({
+        operation: 'UPDATE',
+        entityType: 'WORKSPACE',
+        entityId: id,
+        version: updated.version,
+        data: updated,
+      });
+    }
+
     return updated!;
   }
 
   async softDelete(id: string): Promise<void> {
     await db.update(workspaces).set({ deletedAt: nowISO() }).where(eq(workspaces.id, id));
+    SyncEngine.enqueueOperation({
+      operation: 'DELETE',
+      entityType: 'WORKSPACE',
+      entityId: id,
+    });
   }
 
   async restore(id: string): Promise<void> {
     await db.update(workspaces).set({ deletedAt: null }).where(eq(workspaces.id, id));
+    SyncEngine.enqueueOperation({
+      operation: 'RESTORE',
+      entityType: 'WORKSPACE',
+      entityId: id,
+    });
   }
 }

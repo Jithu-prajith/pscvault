@@ -4,6 +4,7 @@ import { eq, and, isNull, asc } from 'drizzle-orm';
 import { INotebookRepository, CreateNotebookDTO } from '../../domain/repositories/INotebookRepository';
 import { Notebook } from '../../domain/types';
 import { generateUUIDv7, nowISO } from '../../lib/uuid';
+import { SyncEngine } from '../sync/SyncEngine';
 
 export class LocalNotebookRepository implements INotebookRepository {
   async getAll(workspaceId: string): Promise<Notebook[]> {
@@ -35,6 +36,15 @@ export class LocalNotebookRepository implements INotebookRepository {
     };
 
     await db.insert(notebooks).values(newNb);
+
+    SyncEngine.enqueueOperation({
+      operation: 'CREATE',
+      entityType: 'NOTEBOOK',
+      entityId: id,
+      version: 1,
+      data: newNb,
+    });
+
     return newNb;
   }
 
@@ -42,23 +52,58 @@ export class LocalNotebookRepository implements INotebookRepository {
     const now = nowISO();
     await db.update(notebooks).set({ ...data, updatedAt: now }).where(eq(notebooks.id, id));
     const updated = await this.getById(id);
+
+    if (updated) {
+      SyncEngine.enqueueOperation({
+        operation: 'UPDATE',
+        entityType: 'NOTEBOOK',
+        entityId: id,
+        version: updated.version,
+        data: updated,
+      });
+    }
+
     return updated!;
   }
 
   async softDelete(id: string): Promise<void> {
     await db.update(notebooks).set({ deletedAt: nowISO() }).where(eq(notebooks.id, id));
+    SyncEngine.enqueueOperation({
+      operation: 'DELETE',
+      entityType: 'NOTEBOOK',
+      entityId: id,
+    });
   }
 
   async restore(id: string): Promise<void> {
     await db.update(notebooks).set({ deletedAt: null }).where(eq(notebooks.id, id));
+    SyncEngine.enqueueOperation({
+      operation: 'RESTORE',
+      entityType: 'NOTEBOOK',
+      entityId: id,
+    });
   }
 
   async permanentDelete(id: string): Promise<void> {
     await db.delete(notebooks).where(eq(notebooks.id, id));
+    SyncEngine.enqueueOperation({
+      operation: 'DELETE',
+      entityType: 'NOTEBOOK',
+      entityId: id,
+    });
   }
 
   async reorder(id: string, newPosition: string): Promise<void> {
     await db.update(notebooks).set({ position: newPosition, updatedAt: nowISO() }).where(eq(notebooks.id, id));
+    const nb = await this.getById(id);
+    if (nb) {
+      SyncEngine.enqueueOperation({
+        operation: 'UPDATE',
+        entityType: 'NOTEBOOK',
+        entityId: id,
+        data: nb,
+      });
+    }
   }
 
   async duplicate(id: string): Promise<Notebook> {
@@ -77,6 +122,12 @@ export class LocalNotebookRepository implements INotebookRepository {
     if (!nb) return false;
     const nextState = !nb.isFavorite;
     await db.update(notebooks).set({ isFavorite: nextState, updatedAt: nowISO() }).where(eq(notebooks.id, id));
+    SyncEngine.enqueueOperation({
+      operation: 'UPDATE',
+      entityType: 'NOTEBOOK',
+      entityId: id,
+      data: { ...nb, isFavorite: nextState },
+    });
     return nextState;
   }
 }
