@@ -203,7 +203,7 @@ class SyncEngineClass {
             if (operation === 'DELETE') {
               await db.execute(`UPDATE "pages" SET "deleted_at" = $1 WHERE "id" = $2`, [new Date().toISOString(), entityId]);
             } else if (operation === 'RESTORE') {
-              await db.execute(`UPDATE "pages" SET "deleted_at" = NULL WHERE "id" = $2`, [null, entityId]);
+              await db.execute(`UPDATE "pages" SET "deleted_at" = NULL WHERE "id" = $1`, [entityId]);
             } else if (itemData) {
               const contentStr = typeof itemData.content === 'object' ? JSON.stringify(itemData.content) : (itemData.content || '{}');
               await db.execute(

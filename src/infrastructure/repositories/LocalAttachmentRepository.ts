@@ -5,6 +5,7 @@ import { IAttachmentRepository, CreateAttachmentDTO } from '../../domain/reposit
 import { Attachment, MediaType, StorageStats } from '../../domain/types';
 import { generateUUIDv7, nowISO } from '../../lib/uuid';
 import { saveAttachmentFile, resolveAssetUrl, deleteAttachmentFile, classifyMediaType, getExtension } from '../fs/fileService';
+import { SyncEngine } from '../sync/SyncEngine';
 
 export class LocalAttachmentRepository implements IAttachmentRepository {
   async getById(id: string): Promise<Attachment | null> {
@@ -87,11 +88,22 @@ export class LocalAttachmentRepository implements IAttachmentRepository {
     };
 
     await db.insert(attachments).values(record);
-    return {
+
+    const attRes = {
       ...record,
       mediaType,
       metadata: dto.metadata || {},
     };
+
+    SyncEngine.enqueueOperation({
+      operation: 'CREATE',
+      entityType: 'ATTACHMENT',
+      entityId: id,
+      version: 1,
+      data: attRes,
+    });
+
+    return attRes;
   }
 
   async update(id: string, data: Partial<Pick<Attachment, 'originalFileName' | 'extractedText' | 'transcriptionText' | 'metadata'>>): Promise<Attachment> {
@@ -104,15 +116,36 @@ export class LocalAttachmentRepository implements IAttachmentRepository {
 
     await db.update(attachments).set(updateData).where(eq(attachments.id, id));
     const updated = await this.getById(id);
+
+    if (updated) {
+      SyncEngine.enqueueOperation({
+        operation: 'UPDATE',
+        entityType: 'ATTACHMENT',
+        entityId: id,
+        version: updated.version,
+        data: updated,
+      });
+    }
+
     return updated!;
   }
 
   async softDelete(id: string): Promise<void> {
     await db.update(attachments).set({ deletedAt: nowISO() }).where(eq(attachments.id, id));
+    SyncEngine.enqueueOperation({
+      operation: 'DELETE',
+      entityType: 'ATTACHMENT',
+      entityId: id,
+    });
   }
 
   async restore(id: string): Promise<void> {
     await db.update(attachments).set({ deletedAt: null }).where(eq(attachments.id, id));
+    SyncEngine.enqueueOperation({
+      operation: 'RESTORE',
+      entityType: 'ATTACHMENT',
+      entityId: id,
+    });
   }
 
   async permanentDelete(id: string): Promise<void> {
@@ -120,6 +153,11 @@ export class LocalAttachmentRepository implements IAttachmentRepository {
     if (att) {
       await deleteAttachmentFile(att.storagePath);
       await db.delete(attachments).where(eq(attachments.id, id));
+      SyncEngine.enqueueOperation({
+        operation: 'DELETE',
+        entityType: 'ATTACHMENT',
+        entityId: id,
+      });
     }
   }
 
@@ -147,7 +185,17 @@ export class LocalAttachmentRepository implements IAttachmentRepository {
     };
 
     await db.insert(attachments).values(dupRecord);
-    return { ...dupRecord, metadata: source.metadata };
+    const dupRes = { ...dupRecord, metadata: source.metadata };
+
+    SyncEngine.enqueueOperation({
+      operation: 'CREATE',
+      entityType: 'ATTACHMENT',
+      entityId: newId,
+      version: 1,
+      data: dupRes,
+    });
+
+    return dupRes;
   }
 
   async getStorageStats(workspaceId: string): Promise<StorageStats> {
@@ -162,7 +210,7 @@ export class LocalAttachmentRepository implements IAttachmentRepository {
       videoSize: 0,
       drawingSize: 0,
       otherSize: 0,
-      databaseSize: 1024 * 1024, // Approx 1MB DB
+      databaseSize: 1024 * 1024,
       attachmentCount: all.length,
     };
 
