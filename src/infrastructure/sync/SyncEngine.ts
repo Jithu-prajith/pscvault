@@ -1,5 +1,6 @@
 import { getDBClient } from '../db/client';
 import { getDeviceId } from './deviceInfo';
+import { useAuthStore } from '../../stores/authStore';
 
 export interface SyncOperation {
   operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'RESTORE';
@@ -13,8 +14,30 @@ class SyncEngineClass {
   private apiBaseUrl: string = 'http://localhost:5000/api';
   private syncInProgress: boolean = false;
 
+  constructor() {
+    this.setupNetworkListeners();
+  }
+
   public setApiBaseUrl(url: string) {
     this.apiBaseUrl = url.replace(/\/$/, '');
+  }
+
+  private setupNetworkListeners() {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        console.log('🌐 Internet Connection Restored. Triggering Auto Sync...');
+        useAuthStore.getState().setSyncStatus('syncing');
+        this.pushLocalChanges()
+          .then(() => this.pullServerChanges())
+          .then(() => useAuthStore.getState().setSyncStatus('synced', new Date().toISOString()))
+          .catch(() => useAuthStore.getState().setSyncStatus('error'));
+      });
+
+      window.addEventListener('offline', () => {
+        console.log('☁ Device Disconnected. Operating in Offline-First Mode.');
+        useAuthStore.getState().setSyncStatus('offline');
+      });
+    }
   }
 
   private getAuthHeaders(): Record<string, string> {
@@ -34,7 +57,7 @@ class SyncEngineClass {
   // ----------------------------------------------------
   // LOCAL SYNC QUEUE MANAGEMENT
   // ----------------------------------------------------
-  private getLocalQueue(): SyncOperation[] {
+  public getLocalQueue(): SyncOperation[] {
     try {
       const raw = localStorage.getItem('pscvault_sync_queue');
       return raw ? JSON.parse(raw) : [];
@@ -62,34 +85,48 @@ class SyncEngineClass {
     }
     this.saveLocalQueue(queue);
 
-    // Auto-trigger background push
-    this.pushLocalChanges().catch(() => {});
+    if (typeof window !== 'undefined' && !navigator.onLine) {
+      useAuthStore.getState().setSyncStatus('offline');
+      return;
+    }
+
+    // Auto-trigger background push if online
+    this.pushLocalChanges().catch(() => {
+      useAuthStore.getState().setSyncStatus('offline');
+    });
   }
 
   // ----------------------------------------------------
-  // REQUIREMENT 5: FIRST LOGIN ON A NEW DEVICE
+  // FIRST LOGIN ON A NEW DEVICE
   // ----------------------------------------------------
   public async syncOnLogin(token: string): Promise<{ hasCloudWorkspace: boolean }> {
+    if (typeof window !== 'undefined' && !navigator.onLine) {
+      useAuthStore.getState().setSyncStatus('offline');
+      return { hasCloudWorkspace: false };
+    }
+
     try {
+      useAuthStore.getState().setSyncStatus('syncing');
       const headers = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
         'x-device-id': getDeviceId(),
       };
 
-      // 1. Fetch Cloud Workspace Metadata
       const wsRes = await fetch(`${this.apiBaseUrl}/workspace`, { headers });
-      if (!wsRes.ok) return { hasCloudWorkspace: false };
-
-      const wsData = await wsRes.json();
-      if (!wsData.exists || !wsData.workspace) {
+      if (!wsRes.ok) {
+        useAuthStore.getState().setSyncStatus('offline');
         return { hasCloudWorkspace: false };
       }
 
-      // Populate local SQLite with cloud workspace, notebooks, groups, subjects
+      const wsData = await wsRes.json();
+      if (!wsData.exists || !wsData.workspace) {
+        useAuthStore.getState().setSyncStatus('synced');
+        return { hasCloudWorkspace: false };
+      }
+
       const db = await getDBClient();
 
-      // Insert Workspace
       await db.execute(
         `INSERT OR REPLACE INTO "workspaces" ("id", "user_id", "name", "slug", "icon", "settings", "position", "version", "created_at", "updated_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
@@ -99,7 +136,6 @@ class SyncEngineClass {
         ]
       );
 
-      // Insert Notebooks
       for (const nb of wsData.notebooks) {
         await db.execute(
           `INSERT OR REPLACE INTO "notebooks" ("id", "workspace_id", "name", "icon", "color", "position", "version", "created_at", "updated_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -107,7 +143,6 @@ class SyncEngineClass {
         );
       }
 
-      // Insert Section Groups
       for (const g of wsData.groups) {
         await db.execute(
           `INSERT OR REPLACE INTO "section_groups" ("id", "notebook_id", "name", "position", "version", "created_at", "updated_at") VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -115,7 +150,6 @@ class SyncEngineClass {
         );
       }
 
-      // Insert Subject Sections
       for (const s of wsData.subjects) {
         await db.execute(
           `INSERT OR REPLACE INTO "sections" ("id", "notebook_id", "section_group_id", "name", "icon", "color", "position", "version", "created_at", "updated_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -123,28 +157,39 @@ class SyncEngineClass {
         );
       }
 
-      // 2. Fetch Incremental Sync Pull (Cursor = 0 to get all pages and attachments)
       await this.pullServerChanges(token, 0);
+      useAuthStore.getState().setSyncStatus('synced', new Date().toISOString());
 
       return { hasCloudWorkspace: true };
     } catch (err) {
       console.warn('Sync on login warning:', err);
+      useAuthStore.getState().setSyncStatus('offline');
       return { hasCloudWorkspace: false };
     }
   }
 
   // ----------------------------------------------------
-  // REQUIREMENT 3: PUSH LOCAL CHANGES TO CLOUD
+  // PUSH LOCAL CHANGES TO CLOUD
   // ----------------------------------------------------
   public async pushLocalChanges(): Promise<boolean> {
+    if (typeof window !== 'undefined' && !navigator.onLine) {
+      useAuthStore.getState().setSyncStatus('offline');
+      return false;
+    }
+
     while (this.syncInProgress) {
       await new Promise((r) => setTimeout(r, 50));
     }
 
     const queue = this.getLocalQueue();
-    if (queue.length === 0) return true;
+    if (queue.length === 0) {
+      useAuthStore.getState().setSyncStatus('synced');
+      return true;
+    }
 
     this.syncInProgress = true;
+    useAuthStore.getState().setSyncStatus('syncing');
+
     try {
       const headers = this.getAuthHeaders();
       const bodyStr = JSON.stringify({
@@ -165,11 +210,15 @@ class SyncEngineClass {
           if (data.nextCursor) {
             localStorage.setItem('pscvault_sync_cursor', String(data.nextCursor));
           }
+          useAuthStore.getState().setSyncStatus('synced', new Date().toISOString());
           return true;
         }
+      } else {
+        useAuthStore.getState().setSyncStatus('error');
       }
     } catch (e) {
       console.warn('Sync push network warning:', e);
+      useAuthStore.getState().setSyncStatus('offline');
     } finally {
       this.syncInProgress = false;
     }
@@ -177,9 +226,13 @@ class SyncEngineClass {
   }
 
   // ----------------------------------------------------
-  // REQUIREMENT 4: PULL INCREMENTAL CHANGES FROM CLOUD
+  // PULL INCREMENTAL CHANGES FROM CLOUD
   // ----------------------------------------------------
   public async pullServerChanges(overrideToken?: string, overrideCursor?: number): Promise<boolean> {
+    if (typeof window !== 'undefined' && !navigator.onLine) {
+      return false;
+    }
+
     try {
       const headers = overrideToken
         ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${overrideToken}`, 'x-device-id': getDeviceId() }
@@ -234,10 +287,13 @@ class SyncEngineClass {
   }
 
   // ----------------------------------------------------
-  // REQUIREMENT 7: GET SYNC STATUS
+  // GET SYNC STATUS
   // ----------------------------------------------------
   public getSyncStatus(): { status: 'synced' | 'syncing' | 'offline' | 'error'; pendingOps: number } {
     const queue = this.getLocalQueue();
+    if (typeof window !== 'undefined' && !navigator.onLine) {
+      return { status: 'offline', pendingOps: queue.length };
+    }
     if (this.syncInProgress) {
       return { status: 'syncing', pendingOps: queue.length };
     }

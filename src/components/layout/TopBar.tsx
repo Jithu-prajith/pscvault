@@ -1,16 +1,16 @@
 import React from 'react';
-import { Award, Search, Moon, Sun, HardDrive, Command, PanelLeft, PanelRight, Check, Cloud, User as UserIcon, LogIn, FileText, Layers } from 'lucide-react';
+import { Award, Search, Moon, Sun, HardDrive, Command, PanelLeft, PanelRight, Check, Cloud, CloudOff, RefreshCw, AlertTriangle, User as UserIcon, LogIn, Layers } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
 import { useUIStore } from '../../stores/uiStore';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { usePageStore } from '../../stores/pageStore';
+import { SyncEngine } from '../../infrastructure/sync/SyncEngine';
 
 export const TopBar: React.FC = () => {
   const user = useAuthStore((s) => s.user);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const currentWorkspace = useAuthStore((s) => s.currentWorkspace);
   const theme = useAuthStore((s) => s.theme);
   const toggleTheme = useAuthStore((s) => s.toggleTheme);
+  const syncStatus = useAuthStore((s) => s.syncStatus);
 
   const setAuthModalOpen = useAuthStore((s) => s.setAuthModalOpen);
   const setProfileModalOpen = useAuthStore((s) => s.setProfileModalOpen);
@@ -19,10 +19,10 @@ export const TopBar: React.FC = () => {
   const togglePagesSidebar = useUIStore((s) => s.togglePagesSidebar);
   const toggleRightSidebar = useUIStore((s) => s.toggleRightSidebar);
   const setSearchModalOpen = useUIStore((s) => s.setSearchModalOpen);
-  const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const setStorageManagerOpen = useUIStore((s) => s.setStorageManagerOpen);
 
   const saveStatus = usePageStore((s) => s.saveStatus);
+  const pendingOps = SyncEngine.getLocalQueue().length;
 
   return (
     <header className="h-14 bg-slate-900 text-white border-b border-slate-800 px-2 sm:px-4 flex items-center justify-between shrink-0 select-none z-20">
@@ -75,17 +75,30 @@ export const TopBar: React.FC = () => {
 
       {/* Right: User Account, Cloud Sync, Theme, Inspector */}
       <div className="flex items-center gap-1 sm:gap-2">
-        {/* Autosave Status */}
-        <div className="hidden lg:flex items-center gap-1.5 text-xs text-slate-400 px-2 py-1 bg-slate-800/40 rounded-lg">
-          {saveStatus === 'saving' ? (
-            <span className="flex items-center gap-1.5 text-amber-400">
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-              <span>Saving...</span>
+        {/* Autosave & Sync Status Pill */}
+        <div className="hidden lg:flex items-center gap-1.5 text-xs text-slate-400 px-2.5 py-1 bg-slate-800/50 rounded-xl border border-slate-700/50">
+          {syncStatus === 'syncing' ? (
+            <span className="flex items-center gap-1.5 text-brand-400 font-semibold">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              <span>⟳ Syncing...</span>
+            </span>
+          ) : syncStatus === 'offline' ? (
+            <span className="flex items-center gap-1.5 text-amber-400 font-semibold">
+              <CloudOff className="w-3.5 h-3.5" />
+              <span>☁ Offline</span>
+              <span className="text-[10px] text-slate-400 font-normal">
+                ({pendingOps > 0 ? `${pendingOps} pending` : '✓ Saved locally'})
+              </span>
+            </span>
+          ) : syncStatus === 'error' ? (
+            <span className="flex items-center gap-1.5 text-rose-400 font-semibold">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>⚠ Sync pending</span>
             </span>
           ) : (
-            <span className="flex items-center gap-1 text-emerald-400">
-              <Check className="w-3.5 h-3.5" />
-              <span>Saved</span>
+            <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+              <Cloud className="w-3.5 h-3.5" />
+              <span>✓ Synced</span>
             </span>
           )}
         </div>
@@ -97,7 +110,7 @@ export const TopBar: React.FC = () => {
             className="flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700/60 rounded-xl text-xs transition-colors"
             title="User Account & Cloud Sync"
           >
-            <Cloud className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <UserIcon className="w-3.5 h-3.5 text-brand-400 shrink-0" />
             <span className="font-semibold text-slate-200 hidden sm:inline truncate max-w-[90px]">{user.name}</span>
           </button>
         ) : (

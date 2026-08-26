@@ -180,7 +180,9 @@ export class LocalPageRepository implements IPageRepository {
 
   async update(id: string, data: UpdatePageDTO): Promise<Page> {
     const now = nowISO();
-    const updateData: any = { updatedAt: now };
+    const existing = await this.getById(id);
+    const nextVer = (existing?.version || 1) + 1;
+    const updateData: any = { updatedAt: now, version: nextVer };
 
     if (data.title !== undefined) updateData.title = data.title;
     if (data.icon !== undefined) updateData.icon = data.icon;
@@ -211,10 +213,13 @@ export class LocalPageRepository implements IPageRepository {
 
   async updateContent(id: string, content: object): Promise<{ version: number }> {
     const now = nowISO();
+    const existing = await this.getById(id);
+    const nextVer = (existing?.version || 1) + 1;
+
     await db.update(pages).set({
       content: JSON.stringify(content),
       updatedAt: now,
-      version: sql`${pages.version} + 1`,
+      version: nextVer,
     }).where(eq(pages.id, id));
 
     const p = await this.getById(id);
@@ -227,14 +232,12 @@ export class LocalPageRepository implements IPageRepository {
         data: p,
       });
     }
-    return { version: p?.version || 1 };
+    return { version: nextVer };
   }
 
   async softDelete(id: string): Promise<void> {
     const now = nowISO();
-    // Soft delete target page/chapter
     await db.update(pages).set({ deletedAt: now }).where(eq(pages.id, id));
-    // Cascade soft delete to all children/topics where parentId === id
     await db.update(pages).set({ deletedAt: now }).where(eq(pages.parentId, id));
 
     SyncEngine.enqueueOperation({
@@ -245,9 +248,7 @@ export class LocalPageRepository implements IPageRepository {
   }
 
   async restore(id: string): Promise<void> {
-    // Restore target page/chapter
     await db.update(pages).set({ deletedAt: null }).where(eq(pages.id, id));
-    // Cascade restore to all child topics
     await db.update(pages).set({ deletedAt: null }).where(eq(pages.parentId, id));
 
     SyncEngine.enqueueOperation({
@@ -258,7 +259,6 @@ export class LocalPageRepository implements IPageRepository {
   }
 
   async permanentDelete(id: string): Promise<void> {
-    // Delete target and child topics permanently
     await db.delete(pages).where(eq(pages.parentId, id));
     await db.delete(pages).where(eq(pages.id, id));
 
