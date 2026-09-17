@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { User, Workspace } from '../domain/types';
+import { getDeviceId } from '../infrastructure/sync/deviceInfo';
+import { SyncEngine } from '../infrastructure/sync/SyncEngine';
 
 interface AuthState {
   user: User | null;
@@ -25,24 +27,6 @@ interface AuthState {
   setSyncStatus: (status: 'synced' | 'syncing' | 'offline' | 'error', time?: string) => void;
 }
 
-// Helpers for persistent account storage
-function getStoredAccounts(): Record<string, User & { passwordHash: string }> {
-  try {
-    const raw = localStorage.getItem('pscvault_user_accounts');
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveAccounts(accounts: Record<string, User & { passwordHash: string }>) {
-  try {
-    localStorage.setItem('pscvault_user_accounts', JSON.stringify(accounts));
-  } catch (e) {
-    console.warn('Failed saving user accounts:', e);
-  }
-}
-
 function getStoredSession(): { user: User; token: string } | null {
   try {
     const raw = localStorage.getItem('pscvault_session');
@@ -52,15 +36,18 @@ function getStoredSession(): { user: User; token: string } | null {
   }
 }
 
-function sanitizeUserId(email: string): string {
-  const clean = email.toLowerCase().trim().replace(/[^a-z0-9]/g, '_');
-  return `usr_${clean}`;
+function saveStoredSession(user: User, token: string) {
+  try {
+    localStorage.setItem('pscvault_session', JSON.stringify({ user, token }));
+  } catch (e) {
+    console.warn('Failed saving session:', e);
+  }
 }
 
 // Initialize state from stored session
 const initialSession = getStoredSession();
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: initialSession?.user || null,
   currentWorkspace: null,
   theme: 'light',
@@ -96,102 +83,150 @@ export const useAuthStore = create<AuthState>((set) => ({
   setAuthModalOpen: (open) => set({ authModalOpen: open }),
   setProfileModalOpen: (open) => set({ profileModalOpen: open }),
 
+  // REAL BACKEND LOGIN VIA BCRYPT + JWT SIGNING
   login: async (email, password) => {
     const emailKey = email.trim().toLowerCase();
-    const accounts = getStoredAccounts();
-    const existing = accounts[emailKey];
+    const deviceId = getDeviceId();
+    const apiBase = SyncEngine.getApiBaseUrl();
 
-    if (existing) {
-      if (existing.passwordHash !== password) {
-        return { success: false, message: 'Incorrect password. Please try again.' };
+    try {
+      const res = await fetch(`${apiBase}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-device-id': deviceId },
+        body: JSON.stringify({ email: emailKey, password, deviceId }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.token) {
+        return {
+          success: false,
+          message: data.error || data.detail || 'Invalid credentials. Please check your email and password.'
+        };
       }
 
-      const { passwordHash, ...userObj } = existing;
-      const token = `jwt_${Date.now()}`;
-      localStorage.setItem('pscvault_session', JSON.stringify({ user: userObj, token }));
+      // Store real server JWT token and user profile
+      saveStoredSession(data.user, data.token);
 
       set({
-        user: userObj,
-        token,
+        user: data.user,
+        token: data.token,
         isAuthenticated: true,
         authModalOpen: false,
         syncStatus: 'synced',
         lastSyncTime: new Date().toISOString(),
       });
+
+      // Immediately pull any existing cloud workspace
+      try {
+        await SyncEngine.syncOnLogin(data.token);
+      } catch (syncErr) {
+        console.warn('Initial cloud sync warning after login:', syncErr);
+      }
+
       return { success: true };
+    } catch (e: any) {
+      console.warn('Backend login network warning:', e);
+
+      // Offline Fallback for existing session on same device
+      const existing = getStoredSession();
+      if (existing && existing.user.email?.toLowerCase() === emailKey) {
+        set({
+          user: existing.user,
+          token: existing.token,
+          isAuthenticated: true,
+          authModalOpen: false,
+          syncStatus: 'offline',
+        });
+        return { success: true };
+      }
+
+      return {
+        success: false,
+        message: 'Could not connect to authentication server. Please check your connection.'
+      };
     }
-
-    // Auto-create account for new login email if not yet registered
-    const userId = sanitizeUserId(emailKey);
-    const newUser: User = {
-      id: userId,
-      name: email.split('@')[0] || 'UPSC Candidate',
-      email: emailKey,
-      avatarPath: null,
-      preferences: { theme: 'light', onboardingCompleted: false, targetExamYear: '2027' },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    accounts[emailKey] = { ...newUser, passwordHash: password };
-    saveAccounts(accounts);
-
-    const token = `jwt_${Date.now()}`;
-    localStorage.setItem('pscvault_session', JSON.stringify({ user: newUser, token }));
-
-    set({
-      user: newUser,
-      token,
-      isAuthenticated: true,
-      authModalOpen: false,
-      syncStatus: 'synced',
-      lastSyncTime: new Date().toISOString(),
-    });
-    return { success: true };
   },
 
+  // REAL BACKEND REGISTRATION VIA BCRYPT + JWT SIGNING
   register: async (name, email, password) => {
     const emailKey = email.trim().toLowerCase();
-    const accounts = getStoredAccounts();
+    const deviceId = getDeviceId();
+    const apiBase = SyncEngine.getApiBaseUrl();
 
-    if (accounts[emailKey]) {
-      return { success: false, message: 'An account already exists with this email. Please log in.' };
+    try {
+      const res = await fetch(`${apiBase}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-device-id': deviceId },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: emailKey,
+          password,
+          targetExamYear: '2027',
+          deviceId,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.token) {
+        return {
+          success: false,
+          message: data.error || data.detail || 'Registration failed. Please try again.'
+        };
+      }
+
+      // Store real server JWT token and user profile
+      saveStoredSession(data.user, data.token);
+
+      set({
+        user: data.user,
+        token: data.token,
+        isAuthenticated: true,
+        authModalOpen: false,
+        syncStatus: 'synced',
+        lastSyncTime: new Date().toISOString(),
+      });
+
+      // Immediately pull or create any initial cloud workspace
+      try {
+        await SyncEngine.syncOnLogin(data.token);
+      } catch (syncErr) {
+        console.warn('Initial cloud sync warning after register:', syncErr);
+      }
+
+      return { success: true };
+    } catch (e: any) {
+      console.warn('Backend registration network warning:', e);
+      return {
+        success: false,
+        message: 'Could not connect to authentication server. Please check your network connection.'
+      };
     }
-
-    const userId = sanitizeUserId(emailKey);
-    const newUser: User = {
-      id: userId,
-      name: name.trim(),
-      email: emailKey,
-      avatarPath: null,
-      preferences: { theme: 'light', onboardingCompleted: false, targetExamYear: '2027' },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    accounts[emailKey] = { ...newUser, passwordHash: password };
-    saveAccounts(accounts);
-
-    const token = `jwt_${Date.now()}`;
-    localStorage.setItem('pscvault_session', JSON.stringify({ user: newUser, token }));
-
-    set({
-      user: newUser,
-      token,
-      isAuthenticated: true,
-      authModalOpen: false,
-      syncStatus: 'synced',
-      lastSyncTime: new Date().toISOString(),
-    });
-    return { success: true };
   },
 
+  // REAL LOGOUT
   logout: () => {
+    const currentToken = get().token;
+    const apiBase = SyncEngine.getApiBaseUrl();
+
+    if (currentToken) {
+      fetch(`${apiBase}/auth/logout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentToken}`,
+          'x-device-id': getDeviceId(),
+        },
+      }).catch(() => {});
+    }
+
     try {
       localStorage.removeItem('pscvault_session');
     } catch (e) {
       console.warn('Failed clearing session:', e);
     }
+
     set({
       user: null,
       token: null,

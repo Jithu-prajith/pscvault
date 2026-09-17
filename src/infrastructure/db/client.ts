@@ -162,10 +162,11 @@ class LocalStorageFallbackDB implements DBClient {
     const trimmed = query.trim();
 
     // 1. INSERT Handler
-    const insertMatch = trimmed.match(/INSERT\s+INTO\s+("?\w+"?\.)?"?(\w+)"?\s*\((.*?)\)\s*VALUES/i);
+    const insertMatch = trimmed.match(/INSERT(?:\s+OR\s+(REPLACE|IGNORE))?\s+INTO\s+("?\w+"?\.)?"?(\w+)"?\s*\((.*?)\)\s*VALUES/i);
     if (insertMatch) {
-      const tableName = insertMatch[2];
-      const cols = insertMatch[3].split(',').map(c => c.trim().replace(/"/g, ''));
+      const mode = insertMatch[1]?.toUpperCase(); // 'REPLACE' | 'IGNORE' | undefined
+      const tableName = insertMatch[3];
+      const cols = insertMatch[4].split(',').map(c => c.trim().replace(/"/g, ''));
       if (!this.tables[tableName]) this.tables[tableName] = {};
 
       const row: Record<string, any> = {};
@@ -175,6 +176,9 @@ class LocalStorageFallbackDB implements DBClient {
       });
 
       const id = row.id || `fallback_${Date.now()}_${Math.random()}`;
+      if (mode === 'IGNORE' && this.tables[tableName][id]) {
+        return { rowsAffected: 0 };
+      }
       this.tables[tableName][id] = row;
       this.saveToStorage();
       return { rowsAffected: 1 };

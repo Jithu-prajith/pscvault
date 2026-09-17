@@ -22,6 +22,10 @@ class SyncEngineClass {
     this.apiBaseUrl = url.replace(/\/$/, '');
   }
 
+  public getApiBaseUrl(): string {
+    return this.apiBaseUrl;
+  }
+
   private setupNetworkListeners() {
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
@@ -90,10 +94,12 @@ class SyncEngineClass {
       return;
     }
 
-    // Auto-trigger background push if online
-    this.pushLocalChanges().catch(() => {
-      useAuthStore.getState().setSyncStatus('offline');
-    });
+    // Auto-trigger background push if online and not already running
+    if (!this.syncInProgress) {
+      this.pushLocalChanges().catch(() => {
+        useAuthStore.getState().setSyncStatus('offline');
+      });
+    }
   }
 
   // ----------------------------------------------------
@@ -206,11 +212,16 @@ class SyncEngineClass {
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          this.saveLocalQueue([]);
+          const currentQueue = this.getLocalQueue();
+          const remainingQueue = currentQueue.slice(queue.length);
+          this.saveLocalQueue(remainingQueue);
           if (data.nextCursor) {
             localStorage.setItem('pscvault_sync_cursor', String(data.nextCursor));
           }
           useAuthStore.getState().setSyncStatus('synced', new Date().toISOString());
+          if (remainingQueue.length > 0) {
+            this.pushLocalChanges().catch(console.warn);
+          }
           return true;
         }
       } else {
@@ -226,7 +237,7 @@ class SyncEngineClass {
   }
 
   // ----------------------------------------------------
-  // PULL INCREMENTAL CHANGES FROM CLOUD
+  // PULL INCREMENTAL CHANGES FROM CLOUD (ALL ENTITY TYPES)
   // ----------------------------------------------------
   public async pullServerChanges(overrideToken?: string, overrideCursor?: number): Promise<boolean> {
     if (typeof window !== 'undefined' && !navigator.onLine) {
@@ -250,29 +261,7 @@ class SyncEngineClass {
         const db = await getDBClient();
 
         for (const ch of data.changes) {
-          const { operation, entityType, entityId, data: itemData } = ch;
-
-          if (entityType === 'PAGE') {
-            if (operation === 'DELETE') {
-              await db.execute(`UPDATE "pages" SET "deleted_at" = $1 WHERE "id" = $2`, [new Date().toISOString(), entityId]);
-            } else if (operation === 'RESTORE') {
-              await db.execute(`UPDATE "pages" SET "deleted_at" = NULL WHERE "id" = $1`, [entityId]);
-            } else if (itemData) {
-              const contentStr = typeof itemData.content === 'object' ? JSON.stringify(itemData.content) : (itemData.content || '{}');
-              await db.execute(
-                `INSERT OR REPLACE INTO "pages" ("id", "section_id", "parent_id", "type", "numbering", "title", "icon", "cover_image", "content", "position", "syllabus_exam", "syllabus_stage", "syllabus_paper", "syllabus_subject", "syllabus_topic", "is_favorite", "is_template", "version", "created_at", "updated_at", "deleted_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
-                [
-                  itemData.id || entityId, itemData.sectionId, itemData.parentId || null, itemData.type || 'topic',
-                  itemData.numbering || null, itemData.title, itemData.icon || '📄', itemData.coverImage || null,
-                  contentStr, itemData.position || 'a0', itemData.syllabusExam || 'UPSC CSE', itemData.syllabusStage || null,
-                  itemData.syllabusPaper || null, itemData.syllabusSubject || null, itemData.syllabusTopic || null,
-                  itemData.isFavorite ? 1 : 0, itemData.isTemplate ? 1 : 0, itemData.version || 1,
-                  itemData.createdAt || new Date().toISOString(), itemData.updatedAt || new Date().toISOString(),
-                  itemData.deletedAt || null
-                ]
-              );
-            }
-          }
+          await this.applyChangeLocally(db, ch);
         }
 
         if (data.nextCursor) {
@@ -283,6 +272,149 @@ class SyncEngineClass {
     } catch (e) {
       console.warn('Sync pull warning:', e);
       return false;
+    }
+  }
+
+  private async applyChangeLocally(db: any, ch: any): Promise<void> {
+    const { operation, entityType, entityId, data: itemData } = ch;
+    const now = new Date().toISOString();
+
+    switch (entityType) {
+      case 'PAGE': {
+        if (operation === 'DELETE') {
+          await db.execute(`UPDATE "pages" SET "deleted_at" = $1 WHERE "id" = $2`, [now, entityId]);
+        } else if (operation === 'RESTORE') {
+          await db.execute(`UPDATE "pages" SET "deleted_at" = NULL WHERE "id" = $1`, [entityId]);
+        } else if (itemData) {
+          const contentStr = typeof itemData.content === 'object' ? JSON.stringify(itemData.content) : (itemData.content || '{}');
+          await db.execute(
+            `INSERT OR REPLACE INTO "pages" ("id", "section_id", "parent_id", "type", "numbering", "title", "icon", "cover_image", "content", "position", "syllabus_exam", "syllabus_stage", "syllabus_paper", "syllabus_subject", "syllabus_topic", "is_favorite", "is_template", "revision_status", "last_revised_at", "next_revision_at", "revision_count", "version", "created_at", "updated_at", "deleted_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
+            [
+              itemData.id || entityId, itemData.sectionId, itemData.parentId || null, itemData.type || 'topic',
+              itemData.numbering || null, itemData.title, itemData.icon || '📄', itemData.coverImage || null,
+              contentStr, itemData.position || 'a0', itemData.syllabusExam || 'UPSC CSE', itemData.syllabusStage || null,
+              itemData.syllabusPaper || null, itemData.syllabusSubject || null, itemData.syllabusTopic || null,
+              itemData.isFavorite ? 1 : 0, itemData.isTemplate ? 1 : 0, itemData.revisionStatus || 0,
+              itemData.lastRevisedAt || null, itemData.nextRevisionAt || null, itemData.revisionCount || 0,
+              itemData.version || 1, itemData.createdAt || now, itemData.updatedAt || now, itemData.deletedAt || null
+            ]
+          );
+        }
+        break;
+      }
+
+      case 'WORKSPACE': {
+        if (operation === 'DELETE') {
+          await db.execute(`UPDATE "workspaces" SET "deleted_at" = $1 WHERE "id" = $2`, [now, entityId]);
+        } else if (operation === 'RESTORE') {
+          await db.execute(`UPDATE "workspaces" SET "deleted_at" = NULL WHERE "id" = $1`, [entityId]);
+        } else if (itemData) {
+          const settingsStr = typeof itemData.settings === 'object' ? JSON.stringify(itemData.settings) : (itemData.settings || '{}');
+          await db.execute(
+            `INSERT OR REPLACE INTO "workspaces" ("id", "user_id", "name", "slug", "icon", "settings", "position", "version", "created_at", "updated_at", "deleted_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [
+              itemData.id || entityId, itemData.userId, itemData.name, itemData.slug || 'workspace',
+              itemData.icon || '📚', settingsStr, itemData.position || 'a0', itemData.version || 1,
+              itemData.createdAt || now, itemData.updatedAt || now, itemData.deletedAt || null
+            ]
+          );
+        }
+        break;
+      }
+
+      case 'NOTEBOOK': {
+        if (operation === 'DELETE') {
+          await db.execute(`UPDATE "notebooks" SET "deleted_at" = $1 WHERE "id" = $2`, [now, entityId]);
+        } else if (operation === 'RESTORE') {
+          await db.execute(`UPDATE "notebooks" SET "deleted_at" = NULL WHERE "id" = $1`, [entityId]);
+        } else if (itemData) {
+          await db.execute(
+            `INSERT OR REPLACE INTO "notebooks" ("id", "workspace_id", "name", "icon", "color", "position", "is_favorite", "version", "created_at", "updated_at", "deleted_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [
+              itemData.id || entityId, itemData.workspaceId, itemData.name, itemData.icon || '📚',
+              itemData.color || '#6366f1', itemData.position || 'a0', itemData.isFavorite ? 1 : 0, itemData.version || 1,
+              itemData.createdAt || now, itemData.updatedAt || now, itemData.deletedAt || null
+            ]
+          );
+        }
+        break;
+      }
+
+      case 'SECTION_GROUP': {
+        if (operation === 'DELETE') {
+          await db.execute(`UPDATE "section_groups" SET "deleted_at" = $1 WHERE "id" = $2`, [now, entityId]);
+        } else if (operation === 'RESTORE') {
+          await db.execute(`UPDATE "section_groups" SET "deleted_at" = NULL WHERE "id" = $1`, [entityId]);
+        } else if (itemData) {
+          await db.execute(
+            `INSERT OR REPLACE INTO "section_groups" ("id", "notebook_id", "name", "position", "version", "created_at", "updated_at", "deleted_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              itemData.id || entityId, itemData.notebookId, itemData.name, itemData.position || 'a0',
+              itemData.version || 1, itemData.createdAt || now, itemData.updatedAt || now, itemData.deletedAt || null
+            ]
+          );
+        }
+        break;
+      }
+
+      case 'SECTION': {
+        if (operation === 'DELETE') {
+          await db.execute(`UPDATE "sections" SET "deleted_at" = $1 WHERE "id" = $2`, [now, entityId]);
+        } else if (operation === 'RESTORE') {
+          await db.execute(`UPDATE "sections" SET "deleted_at" = NULL WHERE "id" = $1`, [entityId]);
+        } else if (itemData) {
+          await db.execute(
+            `INSERT OR REPLACE INTO "sections" ("id", "notebook_id", "section_group_id", "name", "color", "position", "version", "created_at", "updated_at", "deleted_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [
+              itemData.id || entityId, itemData.notebookId, itemData.sectionGroupId || null, itemData.name,
+              itemData.color || '#10b981', itemData.position || 'a0', itemData.version || 1,
+              itemData.createdAt || now, itemData.updatedAt || now, itemData.deletedAt || null
+            ]
+          );
+        }
+        break;
+      }
+
+      case 'ATTACHMENT': {
+        if (operation === 'DELETE') {
+          await db.execute(`UPDATE "attachments" SET "deleted_at" = $1 WHERE "id" = $2`, [now, entityId]);
+        } else if (operation === 'RESTORE') {
+          await db.execute(`UPDATE "attachments" SET "deleted_at" = NULL WHERE "id" = $1`, [entityId]);
+        } else if (itemData) {
+          const metaStr = typeof itemData.metadata === 'object' ? JSON.stringify(itemData.metadata) : (itemData.metadata || '{}');
+          await db.execute(
+            `INSERT OR REPLACE INTO "attachments" ("id", "workspace_id", "page_id", "file_name", "original_file_name", "mime_type", "file_extension", "file_size", "storage_path", "sha256_hash", "media_type", "width", "height", "duration", "page_count", "thumbnail_path", "extracted_text", "transcription_text", "metadata", "sync_status", "version", "created_at", "updated_at", "deleted_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+            [
+              itemData.id || entityId, itemData.workspaceId, itemData.pageId || null, itemData.fileName || 'file',
+              itemData.originalFileName || 'file', itemData.mimeType || 'application/octet-stream',
+              itemData.fileExtension || 'bin', itemData.fileSize || 0, itemData.storagePath || '',
+              itemData.sha256Hash || '', itemData.mediaType || 'other', itemData.width || null,
+              itemData.height || null, itemData.duration || null, itemData.pageCount || null,
+              itemData.thumbnailPath || null, itemData.extractedText || null, itemData.transcriptionText || null,
+              metaStr, itemData.syncStatus || 'SYNCED', itemData.version || 1,
+              itemData.createdAt || now, itemData.updatedAt || now, itemData.deletedAt || null
+            ]
+          );
+        }
+        break;
+      }
+
+      case 'TAG': {
+        if (operation === 'DELETE') {
+          await db.execute(`DELETE FROM "tags" WHERE "id" = $1`, [entityId]);
+        } else if (itemData) {
+          const wsId = itemData.workspaceId || itemData.workspace_id;
+          const isSys = itemData.isSystem !== undefined ? (itemData.isSystem ? 1 : 0) : 0;
+          await db.execute(
+            `INSERT OR REPLACE INTO "tags" ("id", "workspace_id", "name", "color", "is_system", "created_at") VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              itemData.id || entityId, wsId, itemData.name, itemData.color || '#6366f1',
+              isSys, itemData.createdAt || now
+            ]
+          );
+        }
+        break;
+      }
     }
   }
 
