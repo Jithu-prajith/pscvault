@@ -10,11 +10,24 @@ export interface SyncOperation {
   data?: any;
 }
 
+function cleanApiBaseUrl(rawUrl?: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    return 'http://localhost:5000';
+  }
+  return rawUrl.trim().replace(/\/+$/, '').replace(/\/api$/, '');
+}
+
+function resolveInitialApiBaseUrl(): string {
+  const envUrl = (
+    (typeof import.meta !== 'undefined' && (import.meta as any).env && (
+      (import.meta as any).env.VITE_API_URL || (import.meta as any).env.VITE_API_BASE_URL
+    )) || ''
+  );
+  return cleanApiBaseUrl(envUrl || 'http://localhost:5000');
+}
+
 class SyncEngineClass {
-  private apiBaseUrl: string = (
-    (typeof import.meta !== 'undefined' && (import.meta as any).env && ((import.meta as any).env.VITE_API_BASE_URL || (import.meta as any).env.VITE_API_URL)) ||
-    'http://localhost:5000/api'
-  ).replace(/\/$/, '');
+  private apiBaseUrl: string = resolveInitialApiBaseUrl();
   private syncInProgress: boolean = false;
 
   constructor() {
@@ -22,11 +35,19 @@ class SyncEngineClass {
   }
 
   public setApiBaseUrl(url: string) {
-    this.apiBaseUrl = url.replace(/\/$/, '');
+    this.apiBaseUrl = cleanApiBaseUrl(url);
   }
 
   public getApiBaseUrl(): string {
     return this.apiBaseUrl;
+  }
+
+  public buildUrl(path: string): string {
+    const cleanPath = path.startsWith('/') ? path : `/${path}`;
+    const apiPath = cleanPath.startsWith('/api/') || cleanPath === '/api'
+      ? cleanPath
+      : `/api${cleanPath}`;
+    return `${this.apiBaseUrl}${apiPath}`;
   }
 
   private setupNetworkListeners() {
@@ -122,7 +143,7 @@ class SyncEngineClass {
         'x-device-id': getDeviceId(),
       };
 
-      const wsRes = await fetch(`${this.apiBaseUrl}/workspace`, { headers });
+      const wsRes = await fetch(this.buildUrl('/api/workspace'), { headers });
       if (!wsRes.ok) {
         useAuthStore.getState().setSyncStatus('offline');
         return { hasCloudWorkspace: false };
@@ -206,7 +227,7 @@ class SyncEngineClass {
         operations: queue,
       });
 
-      const res = await fetch(`${this.apiBaseUrl}/sync/push`, {
+      const res = await fetch(this.buildUrl('/api/sync/push'), {
         method: 'POST',
         headers,
         body: bodyStr,
@@ -256,7 +277,7 @@ class SyncEngineClass {
         ? overrideCursor
         : parseInt(localStorage.getItem('pscvault_sync_cursor') || '0', 10);
 
-      const res = await fetch(`${this.apiBaseUrl}/sync/pull?cursor=${currentCursor}`, { headers });
+      const res = await fetch(this.buildUrl(`/api/sync/pull?cursor=${currentCursor}`), { headers });
       if (!res.ok) return false;
 
       const data = await res.json();

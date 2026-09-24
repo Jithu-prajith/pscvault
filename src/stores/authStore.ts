@@ -24,6 +24,8 @@ interface AuthState {
   login: (email: string, password: string) => Promise<{ success: boolean; message?: string }>;
   register: (name: string, email: string, password: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => void;
+  refreshToken: () => Promise<boolean>;
+  fetchCurrentUser: () => Promise<User | null>;
   setSyncStatus: (status: 'synced' | 'syncing' | 'offline' | 'error', time?: string) => void;
 }
 
@@ -90,7 +92,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const apiBase = SyncEngine.getApiBaseUrl();
 
     try {
-      const res = await fetch(`${apiBase}/auth/login`, {
+      const res = await fetch(`${apiBase}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-device-id': deviceId },
         body: JSON.stringify({ email: emailKey, password, deviceId }),
@@ -155,7 +157,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const apiBase = SyncEngine.getApiBaseUrl();
 
     try {
-      const res = await fetch(`${apiBase}/auth/register`, {
+      const res = await fetch(`${apiBase}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-device-id': deviceId },
         body: JSON.stringify({
@@ -211,7 +213,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const apiBase = SyncEngine.getApiBaseUrl();
 
     if (currentToken) {
-      fetch(`${apiBase}/auth/logout`, {
+      fetch(`${apiBase}/api/auth/logout`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -234,6 +236,75 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       authModalOpen: true,
       syncStatus: 'offline',
     });
+  },
+
+  // REAL BACKEND TOKEN REFRESH
+  refreshToken: async () => {
+    const currentToken = get().token;
+    if (!currentToken) return false;
+    const apiBase = SyncEngine.getApiBaseUrl();
+
+    try {
+      const res = await fetch(`${apiBase}/api/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentToken}`,
+          'x-device-id': getDeviceId(),
+        },
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.token) {
+        return false;
+      }
+
+      const currentUser = get().user;
+      if (currentUser) {
+        saveStoredSession(currentUser, data.token);
+      }
+      set({ token: data.token });
+      return true;
+    } catch (e) {
+      console.warn('Backend refresh token network warning:', e);
+      return false;
+    }
+  },
+
+  // REAL BACKEND CURRENT USER PROFILE (/me)
+  fetchCurrentUser: async () => {
+    const currentToken = get().token;
+    if (!currentToken) return null;
+    const apiBase = SyncEngine.getApiBaseUrl();
+
+    try {
+      const res = await fetch(`${apiBase}/api/auth/me`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentToken}`,
+          'x-device-id': getDeviceId(),
+        },
+      });
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          get().logout();
+        }
+        return null;
+      }
+
+      const data = await res.json();
+      if (data && data.id) {
+        saveStoredSession(data, currentToken);
+        set({ user: data, isAuthenticated: true });
+        return data;
+      }
+      return null;
+    } catch (e) {
+      console.warn('Backend fetch profile network warning:', e);
+      return null;
+    }
   },
 
   setSyncStatus: (status, time) => set((s) => ({
