@@ -11,7 +11,10 @@ export interface SyncOperation {
 }
 
 class SyncEngineClass {
-  private apiBaseUrl: string = 'http://localhost:5000/api';
+  private apiBaseUrl: string = (
+    (typeof import.meta !== 'undefined' && (import.meta as any).env && ((import.meta as any).env.VITE_API_BASE_URL || (import.meta as any).env.VITE_API_URL)) ||
+    'http://localhost:5000/api'
+  ).replace(/\/$/, '');
   private syncInProgress: boolean = false;
 
   constructor() {

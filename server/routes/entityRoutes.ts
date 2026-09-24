@@ -56,11 +56,12 @@ router.patch('/notebooks/:id', authMiddleware, async (req: AuthRequest, res: Res
   try {
     const userId = req.user!.userId;
     const id = req.params.id;
+    const { userId: _ignoreUserId, id: _ignoreId, ...updateFields } = req.body;
 
     if (isMongoConnected()) {
-      await NotebookModel.updateOne({ userId, id }, { $set: { ...req.body, updatedAt: new Date() } });
+      await NotebookModel.updateOne({ userId, id }, { $set: { ...updateFields, updatedAt: new Date() } });
     } else {
-      await memoryMongo.updateOne('notebooks', { userId, id }, { $set: { ...req.body, updatedAt: new Date() } });
+      await memoryMongo.updateOne('notebooks', { userId, id }, { $set: { ...updateFields, updatedAt: new Date() } });
     }
 
     const updated = isMongoConnected()
@@ -69,7 +70,11 @@ router.patch('/notebooks/:id', authMiddleware, async (req: AuthRequest, res: Res
 
     return res.json(updated);
   } catch (err: any) {
-    return res.status(500).json({ error: 'Failed updating notebook.', detail: err.message });
+    console.error('Update notebook error:', err?.message || err);
+    return res.status(500).json({
+      error: 'Failed updating notebook.',
+      ...(process.env.NODE_ENV !== 'production' && { detail: err?.message }),
+    });
   }
 });
 
@@ -131,11 +136,12 @@ router.patch('/pages/:id', authMiddleware, async (req: AuthRequest, res: Respons
   try {
     const userId = req.user!.userId;
     const id = req.params.id;
+    const { userId: _ignoreUserId, id: _ignoreId, ...updateFields } = req.body;
 
     if (isMongoConnected()) {
-      await PageModel.updateOne({ userId, id }, { $set: { ...req.body, updatedAt: new Date() } });
+      await PageModel.updateOne({ userId, id }, { $set: { ...updateFields, updatedAt: new Date() } });
     } else {
-      await memoryMongo.updateOne('pages', { userId, id }, { $set: { ...req.body, updatedAt: new Date() } });
+      await memoryMongo.updateOne('pages', { userId, id }, { $set: { ...updateFields, updatedAt: new Date() } });
     }
 
     const updated = isMongoConnected()
@@ -144,7 +150,11 @@ router.patch('/pages/:id', authMiddleware, async (req: AuthRequest, res: Respons
 
     return res.json(updated);
   } catch (err: any) {
-    return res.status(500).json({ error: 'Failed updating page.', detail: err.message });
+    console.error('Update page error:', err?.message || err);
+    return res.status(500).json({
+      error: 'Failed updating page.',
+      ...(process.env.NODE_ENV !== 'production' && { detail: err?.message }),
+    });
   }
 });
 

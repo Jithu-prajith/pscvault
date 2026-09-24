@@ -1,7 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-export const JWT_SECRET = process.env.JWT_SECRET || 'pscvault_upsc_master_jwt_secret_2027';
+export const getJwtSecret = (): string => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('⚠️ [SECURITY WARNING]: JWT_SECRET environment variable is not defined in production!');
+    }
+    return 'pscvault_dev_default_jwt_secret_do_not_use_in_production';
+  }
+  return secret;
+};
+
+export const JWT_SECRET = getJwtSecret();
 
 export interface AuthRequest extends Request {
   user?: {

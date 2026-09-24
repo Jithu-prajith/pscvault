@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { UserModel } from '../models/schemas';
 import { memoryMongo } from '../models/memoryStore';
-import { authMiddleware, AuthRequest, JWT_SECRET } from '../middleware/authMiddleware';
+import { authMiddleware, AuthRequest, getJwtSecret } from '../middleware/authMiddleware';
 
 const router = Router();
 
@@ -52,7 +52,7 @@ router.post('/register', async (req: AuthRequest, res: Response) => {
 
     const token = jwt.sign(
       { userId, email: emailKey, deviceId: deviceId || 'desktop-main' },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: '30d' }
     );
 
@@ -69,8 +69,11 @@ router.post('/register', async (req: AuthRequest, res: Response) => {
       },
     });
   } catch (err: any) {
-    console.error('Registration error:', err);
-    return res.status(500).json({ error: 'Failed creating account.', detail: err.message });
+    console.error('Registration error:', err?.message || err);
+    return res.status(500).json({
+      error: 'Failed creating account.',
+      ...(process.env.NODE_ENV !== 'production' && { detail: err?.message }),
+    });
   }
 });
 
@@ -98,7 +101,7 @@ router.post('/login', async (req: AuthRequest, res: Response) => {
 
     const token = jwt.sign(
       { userId: user.userId, email: user.email, deviceId: deviceId || 'device-main' },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: '30d' }
     );
 
@@ -115,8 +118,11 @@ router.post('/login', async (req: AuthRequest, res: Response) => {
       },
     });
   } catch (err: any) {
-    console.error('Login error:', err);
-    return res.status(500).json({ error: 'Failed logging in.', detail: err.message });
+    console.error('Login error:', err?.message || err);
+    return res.status(500).json({
+      error: 'Failed logging in.',
+      ...(process.env.NODE_ENV !== 'production' && { detail: err?.message }),
+    });
   }
 });
 
@@ -131,7 +137,7 @@ router.post('/refresh', authMiddleware, (req: AuthRequest, res: Response) => {
 
   const token = jwt.sign(
     { userId: req.user.userId, email: req.user.email, deviceId: req.user.deviceId },
-    JWT_SECRET,
+    getJwtSecret(),
     { expiresIn: '30d' }
   );
 

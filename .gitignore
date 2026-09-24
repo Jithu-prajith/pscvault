@@ -5,6 +5,7 @@ node_modules/
 # Production builds
 dist/
 dist-ssr/
+dist-server/
 *.local
 
 # Tauri Rust build outputs
@@ -13,8 +14,8 @@ src-tauri/target/
 # Logs and environment
 *.log
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 .DS_Store
 
 # SQLite local databases & attachments cache
