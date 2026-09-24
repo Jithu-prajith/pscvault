@@ -89,10 +89,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (email, password) => {
     const emailKey = email.trim().toLowerCase();
     const deviceId = getDeviceId();
-    const apiBase = SyncEngine.getApiBaseUrl();
 
     try {
-      const res = await fetch(`${apiBase}/api/auth/login`, {
+      const res = await fetch(SyncEngine.buildUrl('/api/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-device-id': deviceId },
         body: JSON.stringify({ email: emailKey, password, deviceId }),
@@ -154,10 +153,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   register: async (name, email, password) => {
     const emailKey = email.trim().toLowerCase();
     const deviceId = getDeviceId();
-    const apiBase = SyncEngine.getApiBaseUrl();
 
     try {
-      const res = await fetch(`${apiBase}/api/auth/register`, {
+      const res = await fetch(SyncEngine.buildUrl('/api/auth/register'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-device-id': deviceId },
         body: JSON.stringify({
@@ -210,10 +208,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   // REAL LOGOUT
   logout: () => {
     const currentToken = get().token;
-    const apiBase = SyncEngine.getApiBaseUrl();
 
     if (currentToken) {
-      fetch(`${apiBase}/api/auth/logout`, {
+      fetch(SyncEngine.buildUrl('/api/auth/logout'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -242,10 +239,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   refreshToken: async () => {
     const currentToken = get().token;
     if (!currentToken) return false;
-    const apiBase = SyncEngine.getApiBaseUrl();
 
     try {
-      const res = await fetch(`${apiBase}/api/auth/refresh`, {
+      const res = await fetch(SyncEngine.buildUrl('/api/auth/refresh'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -275,10 +271,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   fetchCurrentUser: async () => {
     const currentToken = get().token;
     if (!currentToken) return null;
-    const apiBase = SyncEngine.getApiBaseUrl();
 
     try {
-      const res = await fetch(`${apiBase}/api/auth/me`, {
+      const res = await fetch(SyncEngine.buildUrl('/api/auth/me'), {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',

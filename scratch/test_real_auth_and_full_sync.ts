@@ -94,48 +94,73 @@ async function runRealAuthAndFullSyncTest() {
   const server = app.listen(PORT);
   const API_BASE = `http://localhost:${PORT}/api`;
   const { SyncEngine } = await import('../src/infrastructure/sync/SyncEngine');
+  const { useAuthStore } = await import('../src/stores/authStore');
+
+  // Verify production Render URL construction without /api duplication
+  SyncEngine.setApiBaseUrl('https://pscvault-api.onrender.com');
+  assert(
+    SyncEngine.buildUrl('/api/auth/register') === 'https://pscvault-api.onrender.com/api/auth/register',
+    'URL Builder: POST ${VITE_API_URL}/api/auth/register formatted correctly'
+  );
+  assert(
+    SyncEngine.buildUrl('/auth/register') === 'https://pscvault-api.onrender.com/api/auth/register',
+    'URL Builder: /auth/register automatically prefixed with /api'
+  );
+  assert(
+    SyncEngine.buildUrl('/api/auth/login') === 'https://pscvault-api.onrender.com/api/auth/login',
+    'URL Builder: POST ${VITE_API_URL}/api/auth/login formatted correctly'
+  );
+  assert(
+    SyncEngine.buildUrl('/api/auth/logout') === 'https://pscvault-api.onrender.com/api/auth/logout',
+    'URL Builder: POST ${VITE_API_URL}/api/auth/logout formatted correctly'
+  );
+  assert(
+    SyncEngine.buildUrl('/api/auth/refresh') === 'https://pscvault-api.onrender.com/api/auth/refresh',
+    'URL Builder: POST ${VITE_API_URL}/api/auth/refresh formatted correctly'
+  );
+  assert(
+    SyncEngine.buildUrl('/api/auth/me') === 'https://pscvault-api.onrender.com/api/auth/me',
+    'URL Builder: GET ${VITE_API_URL}/api/auth/me formatted correctly'
+  );
+
+  // Verify when VITE_API_URL already contains trailing /api or slash
+  SyncEngine.setApiBaseUrl('https://pscvault-api.onrender.com/api/');
+  assert(
+    SyncEngine.buildUrl('/api/auth/register') === 'https://pscvault-api.onrender.com/api/auth/register',
+    'URL Builder: No duplicate /api/api when env URL has /api/'
+  );
+
+  // Set to local test server
   SyncEngine.setApiBaseUrl(API_BASE);
 
   const name = 'Real Candidate';
   const email = 'real.candidate@pscvault.org';
   const password = 'RealJWTSecretPassword2027!';
 
-  // Register User Account via POST /api/auth/register
-  const regRes = await fetch(`${API_BASE}/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-device-id': 'laptop-dev-a' },
-    body: JSON.stringify({ name, email, password, deviceId: 'laptop-dev-a' }),
-  });
-
-  const regData = await regRes.json();
-  assert(regRes.status === 201 && !!regData.token, 'Register Account via Backend Endpoint', `User ID: ${regData.user?.id}`);
+  // Register User Account via frontend useAuthStore.register()
+  const regResult = await useAuthStore.getState().register(name, email, password);
+  const registeredToken = useAuthStore.getState().token;
+  assert(regResult.success && !!registeredToken, 'Register Account via useAuthStore.register() calls /api/auth/register');
 
   // Confirm returned token verifies with jwt.verify(token, JWT_SECRET)
   let decoded: any = null;
   try {
-    decoded = jwt.verify(regData.token, JWT_SECRET);
+    decoded = jwt.verify(registeredToken!, JWT_SECRET);
   } catch (e) {}
-  assert(!!decoded && decoded.userId === regData.user.id, 'Register Returns Valid JWT Token Signed with JWT_SECRET');
+  assert(!!decoded && decoded.userId === useAuthStore.getState().user?.id, 'Register Returns Valid JWT Token Signed with JWT_SECRET');
 
-  // Reject Bad Password via POST /api/auth/login
-  const badLogRes = await fetch(`${API_BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-device-id': 'laptop-dev-a' },
-    body: JSON.stringify({ email, password: 'WrongPassword!', deviceId: 'laptop-dev-a' }),
-  });
-  assert(badLogRes.status === 401, 'Reject Invalid Password (HTTP 401)');
+  // Reject Bad Password via useAuthStore.login()
+  const badLogResult = await useAuthStore.getState().login(email, 'WrongPassword!');
+  assert(!badLogResult.success, 'Reject Invalid Password (HTTP 401)');
 
-  // Login Account via POST /api/auth/login
-  const logRes = await fetch(`${API_BASE}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-device-id': 'laptop-dev-a' },
-    body: JSON.stringify({ email, password, deviceId: 'laptop-dev-a' }),
-  });
-  const logData = await logRes.json();
-  assert(logRes.ok && !!logData.token, 'Login Account via Backend Endpoint (HTTP 200)');
+  // Login Account via useAuthStore.login()
+  const logResult = await useAuthStore.getState().login(email, password);
+  const logToken = useAuthStore.getState().token;
+  assert(logResult.success && !!logToken, 'Login Account via useAuthStore.login() calls /api/auth/login');
 
-  const tokenA = logData.token;
-  localStorage.setItem('pscvault_session', JSON.stringify({ user: logData.user, token: tokenA }));
+  const tokenA = logToken!;
+  const userA = useAuthStore.getState().user;
+  localStorage.setItem('pscvault_session', JSON.stringify({ user: userA, token: tokenA }));
 
   // ----------------------------------------------------
   // TEST PART 3: MULTI-ENTITY SYNC PUSH & PULL TEST
@@ -149,7 +174,7 @@ async function runRealAuthAndFullSyncTest() {
   const attRepoA = new LocalAttachmentRepository();
 
   // Device A creates Workspace, Notebook, Group, Section, Page, Attachment, Tag
-  const wsA = await wsRepoA.create({ userId: logData.user.id, name: 'Candidate Master Workspace' });
+  const wsA = await wsRepoA.create({ userId: userA!.id, name: 'Candidate Master Workspace' });
   const nbA = await nbRepoA.create({ workspaceId: wsA.id, name: 'GS I — Art & Culture', icon: '🎨' });
   const grpA = await secRepoA.createGroup({ notebookId: nbA.id, name: 'Architecture & Literature', position: 'a0' });
   const secA = await secRepoA.create({ notebookId: nbA.id, sectionGroupId: grpA.id, name: 'Temple Architecture', color: '#ec4899' });
@@ -186,7 +211,7 @@ async function runRealAuthAndFullSyncTest() {
   // Device B (fresh local DB, same account, different deviceId)
   setActiveLocalStorage(storeB);
   (global as any).localStorage.setItem('pscvault_device_id', 'phone-dev-b');
-  (global as any).localStorage.setItem('pscvault_session', JSON.stringify({ user: logData.user, token: tokenA }));
+  (global as any).localStorage.setItem('pscvault_session', JSON.stringify({ user: userA, token: tokenA }));
 
   // Pull server changes on Device B
   const pullOk = await SyncEngine.pullServerChanges(tokenA, 0);

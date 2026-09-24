@@ -14,7 +14,11 @@ function cleanApiBaseUrl(rawUrl?: string): string {
   if (!rawUrl || typeof rawUrl !== 'string') {
     return 'http://localhost:5000';
   }
-  return rawUrl.trim().replace(/\/+$/, '').replace(/\/api$/, '');
+  return rawUrl
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api\/?$/i, '')
+    .replace(/\/+$/, '');
 }
 
 function resolveInitialApiBaseUrl(): string {
